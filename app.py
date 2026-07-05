@@ -1066,25 +1066,104 @@ def fetch_current_weather(latitude: float, longitude: float) -> Dict[str, Any]:
     )
 
 
+KNOWN_KOREAN_LOCATIONS = {
+    # Open-Meteo 지오코딩에서 "안성"이 북한 강원도 지역으로 먼저 잡히는 경우를 막기 위한 고정 후보입니다.
+    "안성": {"latitude": 37.0079, "longitude": 127.2797, "label": "안성시, 경기도, 대한민국"},
+    "안성시": {"latitude": 37.0079, "longitude": 127.2797, "label": "안성시, 경기도, 대한민국"},
+    "한경대": {"latitude": 37.0116, "longitude": 127.2645, "label": "한경국립대학교 안성캠퍼스, 경기도, 대한민국"},
+    "한경국립대": {"latitude": 37.0116, "longitude": 127.2645, "label": "한경국립대학교 안성캠퍼스, 경기도, 대한민국"},
+}
+
+
+def normalize_place_query(city_name: str) -> str:
+    return re.sub(r"\s+", "", (city_name or "").strip())
+
+
+def has_hangul(text: str) -> bool:
+    return bool(re.search(r"[가-힣]", text or ""))
+
+
+def is_south_korea_place(item: Dict[str, Any]) -> bool:
+    country_code = str(item.get("country_code") or "").upper()
+    country = str(item.get("country") or "")
+    return country_code == "KR" or country in {"대한민국", "South Korea", "Republic of Korea", "Korea, Republic of"}
+
+
+def format_place_label(item: Dict[str, Any], fallback: str = "현재 위치") -> str:
+    parts = [item.get("name"), item.get("admin1"), item.get("country")]
+    return ", ".join(str(p) for p in parts if p) or fallback
+
+
+def score_geocode_result(item: Dict[str, Any], query: str) -> int:
+    name = str(item.get("name") or "")
+    admin1 = str(item.get("admin1") or "")
+    country_code = str(item.get("country_code") or "").upper()
+
+    score = 0
+    if is_south_korea_place(item):
+        score += 1000
+    else:
+        score -= 1000
+    if country_code == "KP":
+        score -= 2000
+
+    compact_name = normalize_place_query(name)
+    compact_admin = normalize_place_query(admin1)
+    compact_query = normalize_place_query(query)
+
+    if compact_query and compact_query == compact_name:
+        score += 180
+    elif compact_query and (compact_query in compact_name or compact_name in compact_query):
+        score += 90
+
+    if "안성" in compact_query and ("경기도" in compact_admin or "Gyeonggi" in admin1):
+        score += 300
+    if "강원" in compact_admin and "안성" in compact_query:
+        score -= 300
+
+    try:
+        score += min(int(item.get("population") or 0) // 10000, 50)
+    except Exception:
+        pass
+    return score
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def geocode_city_name(city_name: str) -> Optional[Dict[str, Any]]:
     city_name = (city_name or "").strip()
     if not city_name:
         return None
+
+    compact_query = normalize_place_query(city_name)
+
+    # 국내 실습용 앱이라 자주 쓰는 지역은 직접 좌표를 우선 사용합니다.
+    # 특히 "안성"은 북한 강원도 후보와 이름이 겹쳐서 API 첫 결과만 쓰면 오동작할 수 있습니다.
+    if compact_query in KNOWN_KOREAN_LOCATIONS:
+        return dict(KNOWN_KOREAN_LOCATIONS[compact_query])
+    if "안성" in compact_query and not any(word in compact_query for word in ["강원", "북한", "조선민주주의"]):
+        return dict(KNOWN_KOREAN_LOCATIONS["안성"])
+
     data = _fetch_json(
         "https://geocoding-api.open-meteo.com/v1/search",
-        {"name": city_name, "count": 1, "language": "ko", "format": "json"},
+        {"name": city_name, "count": 20, "language": "ko", "format": "json"},
     )
     results = data.get("results") or []
     if not results:
         return None
-    item = results[0]
-    parts = [item.get("name"), item.get("admin1"), item.get("country")]
-    label = ", ".join(str(p) for p in parts if p)
+
+    korea_results = [item for item in results if is_south_korea_place(item)]
+
+    # 한글로 국내 지역명을 입력했는데 대한민국 후보가 없으면, 북한/외국 후보를 억지로 보여주지 않습니다.
+    if has_hangul(city_name) and not korea_results:
+        return None
+
+    candidates = korea_results or results
+    item = max(candidates, key=lambda result: score_geocode_result(result, city_name))
+    label = format_place_label(item, city_name)
     return {
         "latitude": item.get("latitude"),
         "longitude": item.get("longitude"),
-        "label": label or city_name,
+        "label": label,
     }
 
 
@@ -1103,9 +1182,9 @@ def reverse_geocode_coords(latitude: float, longitude: float) -> str:
         )
         results = data.get("results") or []
         if results:
-            item = results[0]
-            parts = [item.get("name"), item.get("admin1"), item.get("country")]
-            return ", ".join(str(p) for p in parts if p) or "현재 위치"
+            korea_results = [item for item in results if is_south_korea_place(item)]
+            item = korea_results[0] if korea_results else results[0]
+            return format_place_label(item, "현재 위치")
     except Exception:
         pass
     return "현재 위치"
@@ -1195,12 +1274,12 @@ def render_weather_card(weather: Dict[str, Any], location_label: str):
 
 def render_weather_panel():
     st.markdown("#### 🌦️ 현재 지역 날씨")
-    st.caption("브라우저 위치 권한을 허용하면 현재 위치 기준으로 표시됩니다. 권한이 안 뜨면 지역명을 직접 입력하세요.")
+    st.caption("브라우저 위치 권한을 허용하면 현재 위치 기준으로 표시됩니다. 권한이 안 뜨면 지역명을 직접 입력하세요. 한국 지역명은 대한민국 후보를 우선 선택합니다.")
 
     manual_city = st.text_input(
         "날씨 지역 직접 입력",
         value="",
-        placeholder="예: 안성, 서울, 수원",
+        placeholder="예: 안성, 서울, 수원, 한경대",
         label_visibility="collapsed",
     )
 
@@ -1214,7 +1293,7 @@ def render_weather_panel():
             st.warning(f"지역 검색 중 오류가 발생했어요: {exc}")
             place = None
         if not place:
-            st.info("해당 지역을 찾지 못했어요. 예: 안성, 서울, 수원처럼 입력해보세요.")
+            st.info("해당 지역을 찾지 못했어요. 예: 안성, 서울, 수원, 한경대처럼 입력해보세요.")
             return
         latitude = place.get("latitude")
         longitude = place.get("longitude")
