@@ -1,672 +1,1464 @@
-"""
-일정 비서 AI Streamlit 웹서비스
-
-핵심 구조
-- LangGraph Workflow: 모드 감지 → 일정 파싱/수정 파싱 → 일정 검증 → 요청 분기 → 일정 정리 → 리포트 생성
-- LLM 역할: 자연어 일정에서 날짜, 시간, 장소, 우선순위, 메모를 구조화 JSON으로 변환
-- Python 역할: 시간 정렬, 충돌 검사, 일정표 생성, fallback 파싱
-
-실행:
-  streamlit run apps/schedule_assistant_app.py
-"""
-
-import json
-import operator
-import os
-import re
-from datetime import datetime, timedelta
-from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict
-
-import streamlit as st
-from langgraph.graph import END, START, StateGraph
-from openai import OpenAI
-
-
-PARSE_SYSTEM_PROMPT = """
-너는 사용자의 자연어 일정을 구조화하는 일정 파서다.
-반드시 JSON 객체만 반환한다.
-
-중요 원칙:
-1. 사용자의 일정을 임의로 만들지 않는다.
-2. 날짜, 시간, 장소, 우선순위, 카테고리, 메모를 가능한 범위에서 추출한다.
-3. 날짜나 시간이 불명확하면 null로 둔다.
-4. 시간은 가능하면 24시간제 HH:MM 형식으로 반환한다.
-5. 일정이 여러 개면 events 배열에 모두 넣는다.
-6. 우선순위는 시험, 발표, 마감, 면접, 알바, 병원처럼 중요도가 높으면 high, 보통은 medium, 가벼운 약속은 low로 둔다.
-
-반환 JSON 스키마:
 {
-  "events": [
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "GsiWVwprDPy0"
+   },
+   "source": [
+    "# 일정 비서 AI 챗봇 실습 완성본\n",
+    "\n",
+    "UI를 카드형 대시보드 느낌으로 개선하고, `오늘/내일/모레/요일` 표현을 실행 시점의 한국 날짜 기준으로 계산하도록 보강한 버전입니다.\n",
+    "\n",
+    "핵심 흐름은 `모드 감지 → 일정 파싱/수정 파싱 → 일정 검증 → 일정 정리 → 리포트 생성`입니다.\n"
+   ],
+   "id": "GsiWVwprDPy0"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "NkgleONgDPy1"
+   },
+   "source": [
+    "## 1. 패키지 설치\n",
+    "\n",
+    "Colab에서 처음 실행할 때 필요한 패키지를 설치합니다."
+   ],
+   "id": "NkgleONgDPy1"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "metadata": {
+    "id": "ELTFMRFPDPy2"
+   },
+   "outputs": [],
+   "source": [
+    "!pip -q install streamlit langgraph openai pyngrok grandalf"
+   ],
+   "id": "ELTFMRFPDPy2"
+  },
+  {
+   "cell_type": "code",
+   "source": [
+    "# 선택 사항: API 키는 코드에 직접 적지 말고 환경변수/Colab Secrets/Streamlit 사이드바에 입력하세요.\n",
+    "# 예시:\n",
+    "# import os\n",
+    "# os.environ[\"OPENAI_API_KEY\"] = \"여기에_API_KEY\"\n",
+    "print(\"API 키는 Streamlit 사이드바에서 입력하거나 OPENAI_API_KEY 환경변수로 설정하세요.\")\n"
+   ],
+   "metadata": {
+    "id": "cFR6ySerEgvY"
+   },
+   "id": "cFR6ySerEgvY",
+   "execution_count": 2,
+   "outputs": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "jZWdJgTTDPy2"
+   },
+   "source": [
+    "## 2. 폴더 생성"
+   ],
+   "id": "jZWdJgTTDPy2"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "metadata": {
+    "id": "WykfSRnJDPy2"
+   },
+   "outputs": [],
+   "source": [
+    "!mkdir -p parts apps"
+   ],
+   "id": "WykfSRnJDPy2"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "HMwrrLNnDPy2"
+   },
+   "source": [
+    "## 3. 핵심 함수와 Node 저장\n",
+    "\n",
+    "일정 파싱, fallback 파서, 검증, 일정 정리, 리포트 생성 Node가 들어 있습니다."
+   ],
+   "id": "HMwrrLNnDPy2"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "metadata": {
+    "id": "OPyNSas5DPy3",
+    "outputId": "2f4cb881-f099-4790-cbc7-30a2b3f43b4b",
+    "colab": {
+     "base_uri": "https://localhost:8080/"
+    }
+   },
+   "outputs": [
     {
-      "title": "자료구조 과제 제출",
-      "date": "2026-07-06",
-      "start_time": "14:00",
-      "end_time": null,
-      "location": null,
-      "priority": "high",
-      "category": "school",
-      "notes": "제출 마감"
+     "output_type": "stream",
+     "name": "stdout",
+     "text": [
+      "Overwriting parts/01_schedule_core.py\n"
+     ]
     }
-  ],
-  "preferences": {
-    "buffer_minutes": 30,
-    "sort_basis": "time"
+   ],
+   "source": [
+    "%%writefile parts/01_schedule_core.py\n",
+    "\"\"\"\n",
+    "일정 비서 AI Streamlit 웹서비스\n",
+    "\n",
+    "핵심 구조\n",
+    "- LangGraph Workflow: 모드 감지 → 일정 파싱/수정 파싱 → 일정 검증 → 요청 분기 → 일정 정리 → 리포트 생성\n",
+    "- LLM 역할: 자연어 일정에서 날짜, 시간, 장소, 우선순위, 메모를 구조화 JSON으로 변환\n",
+    "- Python 역할: 시간 정렬, 충돌 검사, 일정표 생성, fallback 파싱\n",
+    "\n",
+    "실행:\n",
+    "  streamlit run apps/schedule_assistant_app.py\n",
+    "\"\"\"\n",
+    "\n",
+    "import json\n",
+    "import operator\n",
+    "import os\n",
+    "import re\n",
+    "from datetime import datetime, timedelta\n",
+    "from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict\n",
+    "from zoneinfo import ZoneInfo\n",
+    "\n",
+    "import streamlit as st\n",
+    "from langgraph.graph import END, START, StateGraph\n",
+    "from openai import OpenAI\n",
+    "\n",
+    "\n",
+    "PARSE_SYSTEM_PROMPT = \"\"\"\n",
+    "너는 사용자의 자연어 일정을 구조화하는 일정 파서다.\n",
+    "반드시 JSON 객체만 반환한다.\n",
+    "\n",
+    "중요 원칙:\n",
+    "1. 사용자의 일정을 임의로 만들지 않는다.\n",
+    "2. 날짜, 시간, 장소, 우선순위, 카테고리, 메모를 가능한 범위에서 추출한다.\n",
+    "3. 날짜나 시간이 불명확하면 null로 둔다.\n",
+    "4. 시간은 가능하면 24시간제 HH:MM 형식으로 반환한다.\n",
+    "5. 일정이 여러 개면 events 배열에 모두 넣는다.\n",
+    "6. 우선순위는 시험, 발표, 마감, 면접, 알바, 병원처럼 중요도가 높으면 high, 보통은 medium, 가벼운 약속은 low로 둔다.\n",
+    "7. 사용자 입력 앞에 제공되는 기준 날짜 정보를 반드시 따른다.\n",
+    "   - '오늘'은 기준 날짜와 같은 날짜다.\n",
+    "   - '내일'은 기준 날짜에 하루를 더한 날짜다.\n",
+    "   - '모레'는 기준 날짜에 이틀을 더한 날짜다.\n",
+    "   - 요일 표현은 기준 날짜 이후에 가장 가까운 해당 요일로 계산한다.\n",
+    "\n",
+    "반환 JSON 스키마:\n",
+    "{\n",
+    "  \"events\": [\n",
+    "    {\n",
+    "      \"title\": \"자료구조 과제 제출\",\n",
+    "      \"date\": \"2026-07-06\",\n",
+    "      \"start_time\": \"14:00\",\n",
+    "      \"end_time\": null,\n",
+    "      \"location\": null,\n",
+    "      \"priority\": \"high\",\n",
+    "      \"category\": \"school\",\n",
+    "      \"notes\": \"제출 마감\"\n",
+    "    }\n",
+    "  ],\n",
+    "  \"preferences\": {\n",
+    "    \"buffer_minutes\": 30,\n",
+    "    \"sort_basis\": \"time\"\n",
+    "  }\n",
+    "}\n",
+    "\"\"\".strip()\n",
+    "\n",
+    "FEEDBACK_SYSTEM_PROMPT = \"\"\"\n",
+    "너는 기존 일정 JSON에 사용자의 수정 요청을 반영하는 일정 편집기다.\n",
+    "반드시 수정이 반영된 전체 JSON 객체만 반환한다.\n",
+    "\n",
+    "규칙:\n",
+    "1. 기존 일정 중 삭제/변경 요청이 있으면 반영한다.\n",
+    "2. 추가 일정이 있으면 events 배열에 추가한다.\n",
+    "3. 애매한 내용은 notes에 남기고 날짜나 시간은 null로 둔다.\n",
+    "4. 새로 계산하거나 없는 일정을 상상해서 추가하지 않는다.\n",
+    "5. 반환 형식은 기존 JSON과 같은 스키마를 유지한다.\n",
+    "6. 사용자 입력 앞에 제공되는 기준 날짜 정보를 반드시 따른다. 오늘/내일/모레/요일 표현은 기준 날짜 기준으로 계산한다.\n",
+    "\"\"\".strip()\n",
+    "\n",
+    "REPORT_SYSTEM_PROMPT = \"\"\"\n",
+    "너는 일정 정리 비서다.\n",
+    "입력으로 받은 plan_result와 validation_errors만 근거로 사용해서 답변한다.\n",
+    "출력은 다음 구조로 작성한다.\n",
+    "\n",
+    "1. 오늘/이번 일정 한 줄 요약\n",
+    "2. 시간순 일정표\n",
+    "3. 충돌 또는 애매한 일정 안내\n",
+    "4. 바로 복붙 가능한 체크리스트\n",
+    "\n",
+    "친절하고 간단하게 작성한다.\n",
+    "\"\"\".strip()\n",
+    "\n",
+    "\n",
+    "class ScheduleState(TypedDict, total=False):\n",
+    "    raw_input: str\n",
+    "    mode: Literal[\"initial\", \"feedback\"]\n",
+    "    schedule_json: Dict[str, Any]\n",
+    "    validation_errors: List[str]\n",
+    "    schedule_error: str\n",
+    "    plan_result: Dict[str, Any]\n",
+    "    final_message: str\n",
+    "    feedback_history: List[str]\n",
+    "    trace: Annotated[List[str], operator.add]\n",
+    "\n",
+    "\n",
+    "def get_setting_from_env_or_secrets(name: str, default: str = \"\") -> str:\n",
+    "    try:\n",
+    "        if name in st.secrets:\n",
+    "            return str(st.secrets[name])\n",
+    "    except Exception:\n",
+    "        pass\n",
+    "    return os.getenv(name, default)\n",
+    "\n",
+    "\n",
+    "def get_api_key_from_env_or_secrets() -> str:\n",
+    "    return get_setting_from_env_or_secrets(\"OPENAI_API_KEY\", \"\")\n",
+    "\n",
+    "\n",
+    "def get_default_model() -> str:\n",
+    "    return get_setting_from_env_or_secrets(\"OPENAI_MODEL\", \"gpt-4.1-mini\")\n",
+    "\n",
+    "\n",
+    "def make_client(api_key: str) -> Optional[OpenAI]:\n",
+    "    if not api_key:\n",
+    "        return None\n",
+    "    return OpenAI(api_key=api_key)\n",
+    "\n",
+    "\n",
+    "KST = ZoneInfo(\"Asia/Seoul\")\n",
+    "\n",
+    "\n",
+    "def now_kst() -> datetime:\n",
+    "    \"\"\"한국 시간 기준 현재 날짜/시간을 반환합니다.\"\"\"\n",
+    "    return datetime.now(KST)\n",
+    "\n",
+    "\n",
+    "def current_date_context(base: Optional[datetime] = None) -> Dict[str, str]:\n",
+    "    \"\"\"오늘/내일 같은 상대 날짜를 LLM과 fallback 파서가 같은 기준으로 계산하게 합니다.\"\"\"\n",
+    "    base = base or now_kst()\n",
+    "    return {\n",
+    "        \"today\": base.strftime(\"%Y-%m-%d\"),\n",
+    "        \"tomorrow\": (base + timedelta(days=1)).strftime(\"%Y-%m-%d\"),\n",
+    "        \"day_after_tomorrow\": (base + timedelta(days=2)).strftime(\"%Y-%m-%d\"),\n",
+    "        \"weekday\": [\"월요일\", \"화요일\", \"수요일\", \"목요일\", \"금요일\", \"토요일\", \"일요일\"][base.weekday()],\n",
+    "        \"now\": base.strftime(\"%Y-%m-%d %H:%M\"),\n",
+    "    }\n",
+    "\n",
+    "\n",
+    "def build_llm_user_prompt(raw_input: str, purpose: str = \"parse\") -> str:\n",
+    "    ctx = current_date_context()\n",
+    "    purpose_label = \"일정 파싱\" if purpose == \"parse\" else \"일정 수정\"\n",
+    "    return f\"\"\"\n",
+    "[기준 날짜 정보 - 한국 시간 Asia/Seoul]\n",
+    "현재 시각: {ctx['now']}\n",
+    "오늘: {ctx['today']} ({ctx['weekday']})\n",
+    "내일: {ctx['tomorrow']}\n",
+    "모레: {ctx['day_after_tomorrow']}\n",
+    "\n",
+    "[처리 목적]\n",
+    "{purpose_label}\n",
+    "\n",
+    "[사용자 입력]\n",
+    "{raw_input}\n",
+    "\"\"\".strip()\n",
+    "\n",
+    "\n",
+    "def normalize_date_value(value: Any, base: Optional[datetime] = None) -> Optional[str]:\n",
+    "    \"\"\"LLM이 '오늘', '내일', '7월 10일'처럼 반환해도 YYYY-MM-DD로 보정합니다.\"\"\"\n",
+    "    if value is None:\n",
+    "        return None\n",
+    "    text = str(value).strip()\n",
+    "    if not text:\n",
+    "        return None\n",
+    "    if re.fullmatch(r\"\\d{4}-\\d{2}-\\d{2}\", text):\n",
+    "        return text\n",
+    "    return normalize_date(text, base=base)\n",
+    "\n",
+    "\n",
+    "def count_date_hints(text: str) -> int:\n",
+    "    patterns = [\n",
+    "        r\"오늘\", r\"내일\", r\"모레\",\n",
+    "        r\"\\d{1,2}\\s*월\\s*\\d{1,2}\\s*일\",\n",
+    "        r\"\\d{1,2}/\\d{1,2}\",\n",
+    "        r\"20\\d{2}[-./년\\s]+\\d{1,2}[-./월\\s]+\\d{1,2}\",\n",
+    "        r\"월요일|화요일|수요일|목요일|금요일|토요일|일요일\",\n",
+    "    ]\n",
+    "    return sum(len(re.findall(p, text)) for p in patterns)\n",
+    "\n",
+    "\n",
+    "def normalize_schedule_dates(data: Dict[str, Any], raw_input: str = \"\") -> Dict[str, Any]:\n",
+    "    \"\"\"상대 날짜와 빠진 날짜를 실행 시점의 한국 날짜 기준으로 후처리합니다.\"\"\"\n",
+    "    base = now_kst()\n",
+    "    inherited_date = normalize_date(raw_input, base=base)\n",
+    "    raw_date_hint_count = count_date_hints(raw_input)\n",
+    "    for event in data.get(\"events\", []):\n",
+    "        combined = \" \".join(\n",
+    "            str(event.get(key) or \"\")\n",
+    "            for key in [\"date\", \"title\", \"notes\"]\n",
+    "        )\n",
+    "        normalized = normalize_date_value(event.get(\"date\"), base=base)\n",
+    "        if normalized is None:\n",
+    "            normalized = normalize_date(combined, base=base)\n",
+    "        # 입력 전체에 날짜 힌트가 1개뿐이면, 여러 일정이 쉼표로 나뉘어도 같은 날짜를 상속합니다.\n",
+    "        if normalized is None and inherited_date and raw_date_hint_count <= 1:\n",
+    "            normalized = inherited_date\n",
+    "        event[\"date\"] = normalized\n",
+    "    return data\n",
+    "\n",
+    "\n",
+    "\n",
+    "def extract_json_object(text: str) -> Dict[str, Any]:\n",
+    "    text = (text or \"\").strip()\n",
+    "    if not text:\n",
+    "        raise ValueError(\"빈 응답입니다.\")\n",
+    "    try:\n",
+    "        return json.loads(text)\n",
+    "    except Exception:\n",
+    "        pass\n",
+    "    fenced = re.search(r\"```(?:json)?\\s*(\\{.*?\\})\\s*```\", text, flags=re.S)\n",
+    "    if fenced:\n",
+    "        return json.loads(fenced.group(1))\n",
+    "    start = text.find(\"{\")\n",
+    "    end = text.rfind(\"}\")\n",
+    "    if start >= 0 and end > start:\n",
+    "        return json.loads(text[start : end + 1])\n",
+    "    raise ValueError(\"JSON 객체를 찾지 못했습니다.\")\n",
+    "\n",
+    "\n",
+    "def call_llm_json(client: Optional[OpenAI], model: str, system_prompt: str, user_prompt: str) -> Dict[str, Any]:\n",
+    "    if client is None:\n",
+    "        raise RuntimeError(\"OPENAI_API_KEY가 없어 fallback 파서를 사용합니다.\")\n",
+    "    try:\n",
+    "        response = client.responses.create(\n",
+    "            model=model,\n",
+    "            input=[\n",
+    "                {\"role\": \"system\", \"content\": system_prompt},\n",
+    "                {\"role\": \"user\", \"content\": user_prompt},\n",
+    "            ],\n",
+    "            temperature=0,\n",
+    "        )\n",
+    "        return extract_json_object(response.output_text)\n",
+    "    except Exception:\n",
+    "        response = client.chat.completions.create(\n",
+    "            model=model,\n",
+    "            messages=[\n",
+    "                {\"role\": \"system\", \"content\": system_prompt},\n",
+    "                {\"role\": \"user\", \"content\": user_prompt},\n",
+    "            ],\n",
+    "            temperature=0,\n",
+    "        )\n",
+    "        return extract_json_object(response.choices[0].message.content or \"\")\n",
+    "\n",
+    "\n",
+    "def normalize_date(text: str, base: Optional[datetime] = None) -> Optional[str]:\n",
+    "    base = base or now_kst()\n",
+    "    text = str(text or \"\")\n",
+    "\n",
+    "    if \"오늘\" in text:\n",
+    "        return base.strftime(\"%Y-%m-%d\")\n",
+    "    if \"내일\" in text:\n",
+    "        return (base + timedelta(days=1)).strftime(\"%Y-%m-%d\")\n",
+    "    if \"모레\" in text:\n",
+    "        return (base + timedelta(days=2)).strftime(\"%Y-%m-%d\")\n",
+    "\n",
+    "    match = re.search(r\"(20\\d{2})[-./년\\s]+(\\d{1,2})[-./월\\s]+(\\d{1,2})\", text)\n",
+    "    if match:\n",
+    "        y, m, d = map(int, match.groups())\n",
+    "        return datetime(y, m, d).strftime(\"%Y-%m-%d\")\n",
+    "\n",
+    "    match = re.search(r\"(\\d{1,2})\\s*월\\s*(\\d{1,2})\\s*일\", text)\n",
+    "    if match:\n",
+    "        m, d = map(int, match.groups())\n",
+    "        y = base.year\n",
+    "        candidate = datetime(y, m, d, tzinfo=KST)\n",
+    "        # 지나간 날짜를 입력하면 다음 해 일정으로 보는 편이 일정 비서에 자연스럽습니다.\n",
+    "        if candidate.date() < base.date():\n",
+    "            candidate = datetime(y + 1, m, d, tzinfo=KST)\n",
+    "        return candidate.strftime(\"%Y-%m-%d\")\n",
+    "\n",
+    "    match = re.search(r\"(\\d{1,2})/(\\d{1,2})\", text)\n",
+    "    if match:\n",
+    "        m, d = map(int, match.groups())\n",
+    "        y = base.year\n",
+    "        candidate = datetime(y, m, d, tzinfo=KST)\n",
+    "        if candidate.date() < base.date():\n",
+    "            candidate = datetime(y + 1, m, d, tzinfo=KST)\n",
+    "        return candidate.strftime(\"%Y-%m-%d\")\n",
+    "\n",
+    "    weekdays = {\"월요일\": 0, \"화요일\": 1, \"수요일\": 2, \"목요일\": 3, \"금요일\": 4, \"토요일\": 5, \"일요일\": 6}\n",
+    "    for word, target in weekdays.items():\n",
+    "        if word in text:\n",
+    "            delta = (target - base.weekday()) % 7\n",
+    "            if delta == 0:\n",
+    "                delta = 7\n",
+    "            return (base + timedelta(days=delta)).strftime(\"%Y-%m-%d\")\n",
+    "    return None\n",
+    "\n",
+    "\n",
+    "def _time_matches(text: str):\n",
+    "    pattern = re.compile(r\"(?:(오전|오후|저녁|밤|낮|새벽)\\s*)?(\\d{1,2})(?:\\s*시|:)(?:\\s*(\\d{1,2})\\s*분?)?\")\n",
+    "    return list(pattern.finditer(text))\n",
+    "\n",
+    "\n",
+    "def normalize_time_from_match(match: re.Match) -> Optional[str]:\n",
+    "    meridiem = match.group(1) or \"\"\n",
+    "    hour = int(match.group(2))\n",
+    "    minute = int(match.group(3) or 0)\n",
+    "    if meridiem in [\"오후\", \"저녁\", \"밤\"] and hour < 12:\n",
+    "        hour += 12\n",
+    "    if meridiem in [\"오전\", \"새벽\"] and hour == 12:\n",
+    "        hour = 0\n",
+    "    if 0 <= hour <= 23 and 0 <= minute <= 59:\n",
+    "        return f\"{hour:02d}:{minute:02d}\"\n",
+    "    return None\n",
+    "\n",
+    "\n",
+    "def guess_priority(text: str) -> str:\n",
+    "    high_keywords = [\"시험\", \"마감\", \"제출\", \"발표\", \"면접\", \"병원\", \"알바\", \"회의\", \"중요\"]\n",
+    "    low_keywords = [\"놀\", \"데이트\", \"게임\", \"산책\", \"카페\", \"친구\"]\n",
+    "    if any(k in text for k in high_keywords):\n",
+    "        return \"high\"\n",
+    "    if any(k in text for k in low_keywords):\n",
+    "        return \"low\"\n",
+    "    return \"medium\"\n",
+    "\n",
+    "\n",
+    "def guess_category(text: str) -> str:\n",
+    "    if any(k in text for k in [\"수업\", \"과제\", \"시험\", \"발표\", \"학교\", \"강의\"]):\n",
+    "        return \"school\"\n",
+    "    if any(k in text for k in [\"알바\", \"근무\", \"회의\", \"출근\", \"업무\"]):\n",
+    "        return \"work\"\n",
+    "    if any(k in text for k in [\"병원\", \"운동\", \"헬스\", \"약\", \"치과\"]):\n",
+    "        return \"health\"\n",
+    "    if any(k in text for k in [\"친구\", \"데이트\", \"약속\", \"카페\", \"영화\"]):\n",
+    "        return \"personal\"\n",
+    "    return \"etc\"\n",
+    "\n",
+    "\n",
+    "def clean_title(text: str) -> str:\n",
+    "    title = text\n",
+    "    remove_patterns = [\n",
+    "        r\"20\\d{2}[-./년\\s]+\\d{1,2}[-./월\\s]+\\d{1,2}\",\n",
+    "        r\"\\d{1,2}\\s*월\\s*\\d{1,2}\\s*일\",\n",
+    "        r\"\\d{1,2}/\\d{1,2}\",\n",
+    "        r\"오늘|내일|모레|월요일|화요일|수요일|목요일|금요일|토요일|일요일\",\n",
+    "        r\"(?:(오전|오후|저녁|밤|낮|새벽)\\s*)?\\d{1,2}(?:\\s*시|:)(?:\\s*\\d{1,2}\\s*분?)?\",\n",
+    "        r\"부터|까지|에|에는|일정|해야\\s*돼|해야돼|있어\",\n",
+    "    ]\n",
+    "    for pat in remove_patterns:\n",
+    "        title = re.sub(pat, \" \", title)\n",
+    "    title = re.sub(r\"\\s+\", \" \", title).strip(\" ,.-\")\n",
+    "    return title or \"제목 미정 일정\"\n",
+    "\n",
+    "\n",
+    "def fallback_parse_schedule(raw_input: str) -> Dict[str, Any]:\n",
+    "    text = raw_input.strip()\n",
+    "    chunks = [c.strip() for c in re.split(r\"[\\n,;]+|그리고|또\", text) if c.strip()]\n",
+    "    if not chunks:\n",
+    "        chunks = [text]\n",
+    "\n",
+    "    events: List[Dict[str, Any]] = []\n",
+    "    inherited_date = normalize_date(text)\n",
+    "    for chunk in chunks:\n",
+    "        date_value = normalize_date(chunk) or inherited_date\n",
+    "        matches = _time_matches(chunk)\n",
+    "        start_time = normalize_time_from_match(matches[0]) if matches else None\n",
+    "        end_time = normalize_time_from_match(matches[1]) if len(matches) >= 2 else None\n",
+    "        event = {\n",
+    "            \"title\": clean_title(chunk),\n",
+    "            \"date\": date_value,\n",
+    "            \"start_time\": start_time,\n",
+    "            \"end_time\": end_time,\n",
+    "            \"location\": None,\n",
+    "            \"priority\": guess_priority(chunk),\n",
+    "            \"category\": guess_category(chunk),\n",
+    "            \"notes\": \"fallback 파서로 추출됨\",\n",
+    "        }\n",
+    "        events.append(event)\n",
+    "\n",
+    "    return {\"events\": events, \"preferences\": {\"buffer_minutes\": 30, \"sort_basis\": \"time\"}}\n",
+    "\n",
+    "\n",
+    "def ensure_schedule_schema(data: Dict[str, Any]) -> Dict[str, Any]:\n",
+    "    events = data.get(\"events\") or []\n",
+    "    normalized = []\n",
+    "    for event in events:\n",
+    "        if not isinstance(event, dict):\n",
+    "            continue\n",
+    "        normalized.append(\n",
+    "            {\n",
+    "                \"title\": event.get(\"title\") or \"제목 미정 일정\",\n",
+    "                \"date\": event.get(\"date\"),\n",
+    "                \"start_time\": event.get(\"start_time\"),\n",
+    "                \"end_time\": event.get(\"end_time\"),\n",
+    "                \"location\": event.get(\"location\"),\n",
+    "                \"priority\": event.get(\"priority\") or \"medium\",\n",
+    "                \"category\": event.get(\"category\") or \"etc\",\n",
+    "                \"notes\": event.get(\"notes\") or \"\",\n",
+    "            }\n",
+    "        )\n",
+    "    preferences = data.get(\"preferences\") or {}\n",
+    "    preferences.setdefault(\"buffer_minutes\", 30)\n",
+    "    preferences.setdefault(\"sort_basis\", \"time\")\n",
+    "    return {\"events\": normalized, \"preferences\": preferences}\n",
+    "\n",
+    "\n",
+    "def parse_datetime(event: Dict[str, Any]) -> Optional[datetime]:\n",
+    "    date_value = event.get(\"date\")\n",
+    "    time_value = event.get(\"start_time\")\n",
+    "    if not date_value or not time_value:\n",
+    "        return None\n",
+    "    try:\n",
+    "        return datetime.strptime(f\"{date_value} {time_value}\", \"%Y-%m-%d %H:%M\")\n",
+    "    except Exception:\n",
+    "        return None\n",
+    "\n",
+    "\n",
+    "def end_datetime(event: Dict[str, Any]) -> Optional[datetime]:\n",
+    "    start = parse_datetime(event)\n",
+    "    if start is None:\n",
+    "        return None\n",
+    "    end_time = event.get(\"end_time\")\n",
+    "    if end_time:\n",
+    "        try:\n",
+    "            return datetime.strptime(f\"{event.get('date')} {end_time}\", \"%Y-%m-%d %H:%M\")\n",
+    "        except Exception:\n",
+    "            pass\n",
+    "    return start + timedelta(hours=1)\n",
+    "\n",
+    "\n",
+    "def format_event_line(event: Dict[str, Any]) -> str:\n",
+    "    date_part = event.get(\"date\") or \"날짜 미정\"\n",
+    "    time_part = event.get(\"start_time\") or \"시간 미정\"\n",
+    "    if event.get(\"end_time\"):\n",
+    "        time_part += f\"~{event['end_time']}\"\n",
+    "    priority_icon = {\"high\": \"🔥\", \"medium\": \"•\", \"low\": \"▫️\"}.get(event.get(\"priority\"), \"•\")\n",
+    "    location = f\" @ {event['location']}\" if event.get(\"location\") else \"\"\n",
+    "    return f\"{priority_icon} {date_part} {time_part} | {event.get('title', '제목 미정')}{location}\"\n",
+    "\n",
+    "\n",
+    "# =========================\n",
+    "# LangGraph Node 함수들\n",
+    "# =========================\n",
+    "\n",
+    "def detect_mode_node(state: ScheduleState) -> Dict[str, Any]:\n",
+    "    raw = state.get(\"raw_input\", \"\")\n",
+    "    has_existing = bool(state.get(\"schedule_json\", {}).get(\"events\"))\n",
+    "    feedback_words = [\"수정\", \"변경\", \"바꿔\", \"옮겨\", \"추가\", \"삭제\", \"빼\", \"취소\", \"다시\"]\n",
+    "    mode: Literal[\"initial\", \"feedback\"] = \"feedback\" if has_existing and any(w in raw for w in feedback_words) else \"initial\"\n",
+    "    return {\"mode\": mode, \"trace\": [f\"detect_mode:{mode}\"]}\n",
+    "\n",
+    "\n",
+    "def input_parsing_node_factory(client: Optional[OpenAI], model: str):\n",
+    "    def input_parsing_node(state: ScheduleState) -> Dict[str, Any]:\n",
+    "        raw = state.get(\"raw_input\", \"\")\n",
+    "        try:\n",
+    "            user_prompt = build_llm_user_prompt(raw, purpose=\"parse\")\n",
+    "            parsed = call_llm_json(client, model, PARSE_SYSTEM_PROMPT, user_prompt)\n",
+    "            parsed = ensure_schedule_schema(parsed)\n",
+    "            parsed = normalize_schedule_dates(parsed, raw)\n",
+    "            trace = \"input_parsing:llm\"\n",
+    "        except Exception:\n",
+    "            parsed = fallback_parse_schedule(raw)\n",
+    "            parsed = normalize_schedule_dates(parsed, raw)\n",
+    "            trace = \"input_parsing:fallback\"\n",
+    "        return {\"schedule_json\": parsed, \"trace\": [trace]}\n",
+    "\n",
+    "    return input_parsing_node\n",
+    "\n",
+    "\n",
+    "def feedback_parsing_node_factory(client: Optional[OpenAI], model: str):\n",
+    "    def feedback_parsing_node(state: ScheduleState) -> Dict[str, Any]:\n",
+    "        raw = state.get(\"raw_input\", \"\")\n",
+    "        previous = ensure_schedule_schema(state.get(\"schedule_json\", {}))\n",
+    "        previous = normalize_schedule_dates(previous, \"\")\n",
+    "        try:\n",
+    "            user_prompt = (\n",
+    "                build_llm_user_prompt(raw, purpose=\"feedback\")\n",
+    "                + \"\\n\\n[기존 일정 JSON]\\n\"\n",
+    "                + json.dumps(previous, ensure_ascii=False)\n",
+    "                + \"\\n\\n[수정 요청]\\n\"\n",
+    "                + raw\n",
+    "            )\n",
+    "            parsed = call_llm_json(client, model, FEEDBACK_SYSTEM_PROMPT, user_prompt)\n",
+    "            parsed = ensure_schedule_schema(parsed)\n",
+    "            parsed = normalize_schedule_dates(parsed, raw)\n",
+    "            trace = \"feedback_parsing:llm\"\n",
+    "        except Exception:\n",
+    "            # fallback에서는 삭제/변경까지 완벽히 처리하기 어렵기 때문에 새 일정은 추가하고, 수정 문장은 기록합니다.\n",
+    "            parsed = previous\n",
+    "            additional = fallback_parse_schedule(raw).get(\"events\", [])\n",
+    "            additional = normalize_schedule_dates({\"events\": additional, \"preferences\": {}}, raw).get(\"events\", [])\n",
+    "            if any(w in raw for w in [\"추가\", \"또\", \"그리고\"]):\n",
+    "                parsed[\"events\"].extend(additional)\n",
+    "            parsed.setdefault(\"preferences\", {\"buffer_minutes\": 30, \"sort_basis\": \"time\"})\n",
+    "            trace = \"feedback_parsing:fallback\"\n",
+    "        history = state.get(\"feedback_history\", []) + [raw]\n",
+    "        return {\"schedule_json\": parsed, \"feedback_history\": history, \"trace\": [trace]}\n",
+    "\n",
+    "    return feedback_parsing_node\n",
+    "\n",
+    "\n",
+    "def schedule_check_node(state: ScheduleState) -> Dict[str, Any]:\n",
+    "    schedule = ensure_schedule_schema(state.get(\"schedule_json\", {}))\n",
+    "    events = schedule.get(\"events\", [])\n",
+    "    messages: List[str] = []\n",
+    "    conflicts: List[str] = []\n",
+    "\n",
+    "    if not events:\n",
+    "        return {\"schedule_error\": \"일정 내용을 찾지 못했어요. 예: '내일 오후 2시 데이터분석 과제 제출'처럼 입력해 주세요.\", \"trace\": [\"schedule_check:error\"]}\n",
+    "\n",
+    "    for event in events:\n",
+    "        if not event.get(\"date\"):\n",
+    "            messages.append(f\"'{event.get('title')}' 일정의 날짜가 명확하지 않아요.\")\n",
+    "        if not event.get(\"start_time\"):\n",
+    "            messages.append(f\"'{event.get('title')}' 일정의 시작 시간이 명확하지 않아요.\")\n",
+    "\n",
+    "    dated_events = [e for e in events if parse_datetime(e) is not None]\n",
+    "    dated_events.sort(key=lambda e: parse_datetime(e) or datetime.max)\n",
+    "    for prev, cur in zip(dated_events, dated_events[1:]):\n",
+    "        prev_end = end_datetime(prev)\n",
+    "        cur_start = parse_datetime(cur)\n",
+    "        if prev_end and cur_start and prev.get(\"date\") == cur.get(\"date\") and cur_start < prev_end:\n",
+    "            conflicts.append(f\"'{prev.get('title')}' 일정과 '{cur.get('title')}' 일정 시간이 겹칠 수 있어요.\")\n",
+    "\n",
+    "    all_messages = messages + conflicts\n",
+    "    return {\"validation_errors\": all_messages, \"trace\": [\"schedule_check:ok\"]}\n",
+    "\n",
+    "\n",
+    "def route_request_node(state: ScheduleState) -> Dict[str, Any]:\n",
+    "    return {\"trace\": [\"route_request:plan\"]}\n",
+    "\n",
+    "\n",
+    "def plan_generation_node(state: ScheduleState) -> Dict[str, Any]:\n",
+    "    schedule = ensure_schedule_schema(state.get(\"schedule_json\", {}))\n",
+    "    events = schedule.get(\"events\", [])\n",
+    "    sorted_events = sorted(events, key=lambda e: (e.get(\"date\") or \"9999-99-99\", e.get(\"start_time\") or \"99:99\", {\"high\": 0, \"medium\": 1, \"low\": 2}.get(e.get(\"priority\"), 1)))\n",
+    "\n",
+    "    grouped: Dict[str, List[Dict[str, Any]]] = {}\n",
+    "    for event in sorted_events:\n",
+    "        grouped.setdefault(event.get(\"date\") or \"날짜 미정\", []).append(event)\n",
+    "\n",
+    "    checklist = [f\"[ ] {event.get('title', '제목 미정')}\" for event in sorted_events]\n",
+    "    plan_result = {\n",
+    "        \"events\": sorted_events,\n",
+    "        \"grouped\": grouped,\n",
+    "        \"checklist\": checklist,\n",
+    "        \"validation_errors\": state.get(\"validation_errors\", []),\n",
+    "        \"event_count\": len(sorted_events),\n",
+    "    }\n",
+    "    return {\"plan_result\": plan_result, \"trace\": [\"plan_generation\"]}\n",
+    "\n",
+    "\n",
+    "def report_generation_node_factory(client: Optional[OpenAI], model: str):\n",
+    "    def report_generation_node(state: ScheduleState) -> Dict[str, Any]:\n",
+    "        if state.get(\"schedule_error\"):\n",
+    "            return {\"final_message\": state[\"schedule_error\"], \"trace\": [\"report_generation:error\"]}\n",
+    "\n",
+    "        plan = state.get(\"plan_result\", {})\n",
+    "        if client is not None:\n",
+    "            try:\n",
+    "                user_prompt = json.dumps(plan, ensure_ascii=False, indent=2)\n",
+    "                response = client.responses.create(\n",
+    "                    model=model,\n",
+    "                    input=[\n",
+    "                        {\"role\": \"system\", \"content\": REPORT_SYSTEM_PROMPT},\n",
+    "                        {\"role\": \"user\", \"content\": user_prompt},\n",
+    "                    ],\n",
+    "                    temperature=0.3,\n",
+    "                )\n",
+    "                return {\"final_message\": response.output_text, \"trace\": [\"report_generation:llm\"]}\n",
+    "            except Exception:\n",
+    "                pass\n",
+    "\n",
+    "        lines = [\"## 📅 일정 정리 결과\", \"\"]\n",
+    "        lines.append(f\"총 {plan.get('event_count', 0)}개의 일정을 정리했어요.\")\n",
+    "        lines.append(\"\")\n",
+    "        grouped = plan.get(\"grouped\", {})\n",
+    "        for date_value, events in grouped.items():\n",
+    "            lines.append(f\"### {date_value}\")\n",
+    "            for event in events:\n",
+    "                lines.append(f\"- {format_event_line(event)}\")\n",
+    "            lines.append(\"\")\n",
+    "        errors = plan.get(\"validation_errors\", [])\n",
+    "        if errors:\n",
+    "            lines.append(\"### ⚠️ 확인 필요\")\n",
+    "            for msg in errors:\n",
+    "                lines.append(f\"- {msg}\")\n",
+    "            lines.append(\"\")\n",
+    "        lines.append(\"### ✅ 체크리스트\")\n",
+    "        for item in plan.get(\"checklist\", []):\n",
+    "            lines.append(f\"- {item}\")\n",
+    "        return {\"final_message\": \"\\n\".join(lines), \"trace\": [\"report_generation:fallback\"]}\n",
+    "\n",
+    "    return report_generation_node\n",
+    "\n",
+    "\n",
+    "def mode_router(state: ScheduleState) -> str:\n",
+    "    return state.get(\"mode\", \"initial\")\n",
+    "\n",
+    "\n",
+    "def schedule_check_router(state: ScheduleState) -> str:\n",
+    "    if state.get(\"schedule_error\"):\n",
+    "        return \"error\"\n",
+    "    return \"ok\"\n"
+   ],
+   "id": "OPyNSas5DPy3"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "fmoQ2J93DPy4"
+   },
+   "source": [
+    "## 4. LangGraph 연결 저장\n",
+    "\n",
+    "정산비서AI에서 TODO로 연결했던 부분과 같은 역할입니다."
+   ],
+   "id": "fmoQ2J93DPy4"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "metadata": {
+    "id": "mGRVE6tlDPy4",
+    "outputId": "78840e97-5284-482e-8011-81abe6f739e3",
+    "colab": {
+     "base_uri": "https://localhost:8080/"
+    }
+   },
+   "outputs": [
+    {
+     "output_type": "stream",
+     "name": "stdout",
+     "text": [
+      "Overwriting parts/02_langgraph_connection.py\n"
+     ]
+    }
+   ],
+   "source": [
+    "%%writefile parts/02_langgraph_connection.py\n",
+    "# 학생 실습 범위처럼 그래프 연결만 따로 분리한 파일입니다.\n",
+    "def build_graph(client: Optional[OpenAI], model: str):\n",
+    "    builder = StateGraph(ScheduleState)\n",
+    "\n",
+    "    # 1. Node 등록\n",
+    "    builder.add_node(\"detect_mode\", detect_mode_node)\n",
+    "    builder.add_node(\"input_parsing\", input_parsing_node_factory(client, model))\n",
+    "    builder.add_node(\"feedback_parsing\", feedback_parsing_node_factory(client, model))\n",
+    "    builder.add_node(\"schedule_check\", schedule_check_node)\n",
+    "    builder.add_node(\"route_request\", route_request_node)\n",
+    "    builder.add_node(\"plan_generation\", plan_generation_node)\n",
+    "    builder.add_node(\"report_generation\", report_generation_node_factory(client, model))\n",
+    "\n",
+    "    # 2. 시작점 연결\n",
+    "    builder.add_edge(START, \"detect_mode\")\n",
+    "\n",
+    "    # 3. 최초 입력 / 수정 요청 분기\n",
+    "    builder.add_conditional_edges(\n",
+    "        \"detect_mode\",\n",
+    "        mode_router,\n",
+    "        {\n",
+    "            \"initial\": \"input_parsing\",\n",
+    "            \"feedback\": \"feedback_parsing\",\n",
+    "        },\n",
+    "    )\n",
+    "\n",
+    "    # 4. 두 파싱 경로를 검증 Node로 합치기\n",
+    "    for node in [\"input_parsing\", \"feedback_parsing\"]:\n",
+    "        builder.add_edge(node, \"schedule_check\")\n",
+    "\n",
+    "    # 5. 검증 결과에 따라 오류 리포트 또는 정상 일정 정리로 분기\n",
+    "    builder.add_conditional_edges(\n",
+    "        \"schedule_check\",\n",
+    "        schedule_check_router,\n",
+    "        {\n",
+    "            \"error\": \"report_generation\",\n",
+    "            \"ok\": \"route_request\",\n",
+    "        },\n",
+    "    )\n",
+    "\n",
+    "    # 6. 정상 경로와 종료 연결\n",
+    "    builder.add_edge(\"route_request\", \"plan_generation\")\n",
+    "    builder.add_edge(\"plan_generation\", \"report_generation\")\n",
+    "    builder.add_edge(\"report_generation\", END)\n",
+    "\n",
+    "    return builder.compile()\n"
+   ],
+   "id": "mGRVE6tlDPy4"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "KOcD3Oh4DPy4"
+   },
+   "source": [
+    "## 5. Streamlit UI 저장"
+   ],
+   "id": "KOcD3Oh4DPy4"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "metadata": {
+    "id": "kZrmtjokDPy4",
+    "outputId": "8d9a1455-2c46-4f57-803f-03ed19b398ec",
+    "colab": {
+     "base_uri": "https://localhost:8080/"
+    }
+   },
+   "outputs": [
+    {
+     "output_type": "stream",
+     "name": "stdout",
+     "text": [
+      "Overwriting parts/03_streamlit_ui.py\n"
+     ]
+    }
+   ],
+   "source": [
+    "%%writefile parts/03_streamlit_ui.py\n",
+    "EXAMPLES = [\n",
+    "    \"오늘 1시 병원, 3시 과제 제출, 6시 헬스장 일정 정리해줘.\",\n",
+    "    \"내일 오전 10시 자료구조 수업, 오후 2시 SQLD 공부, 저녁 7시 친구 약속 있어. SQLD 공부가 제일 중요해.\",\n",
+    "    \"7월 10일 오후 3시 팀플 회의, 오후 4시 발표 준비, 오후 4시 30분 알바 가야 돼.\",\n",
+    "    \"월요일 오전 9시 수업, 오후 1시 점심 약속, 오후 2시부터 4시까지 공기업 IT 프로젝트 공부.\",\n",
+    "]\n",
+    "\n",
+    "PRIORITY_META = {\n",
+    "    \"high\": {\"label\": \"중요\", \"emoji\": \"🔥\", \"class\": \"priority-high\"},\n",
+    "    \"medium\": {\"label\": \"보통\", \"emoji\": \"✨\", \"class\": \"priority-medium\"},\n",
+    "    \"low\": {\"label\": \"여유\", \"emoji\": \"🌿\", \"class\": \"priority-low\"},\n",
+    "}\n",
+    "\n",
+    "CATEGORY_META = {\n",
+    "    \"school\": \"🎓 학교\",\n",
+    "    \"work\": \"💼 업무\",\n",
+    "    \"health\": \"💪 건강\",\n",
+    "    \"personal\": \"🧡 개인\",\n",
+    "    \"etc\": \"📌 기타\",\n",
+    "}\n",
+    "\n",
+    "\n",
+    "def reset_session():\n",
+    "    for key in [\"messages\", \"schedule_json\", \"last_plan\", \"last_trace\", \"feedback_history\", \"pending_example\"]:\n",
+    "        st.session_state.pop(key, None)\n",
+    "\n",
+    "\n",
+    "def ensure_state():\n",
+    "    if \"messages\" not in st.session_state:\n",
+    "        today = current_date_context()\n",
+    "        st.session_state.messages = [\n",
+    "            {\n",
+    "                \"role\": \"assistant\",\n",
+    "                \"content\": (\n",
+    "                    f\"안녕하세요! 오늘은 **{today['today']} ({today['weekday']})**이에요.\\n\\n\"\n",
+    "                    \"자연어로 일정을 말해주면 날짜를 계산해서 시간순으로 정리하고, 겹치는 일정도 확인해드릴게요.\"\n",
+    "                ),\n",
+    "            }\n",
+    "        ]\n",
+    "    st.session_state.setdefault(\"feedback_history\", [])\n",
+    "\n",
+    "\n",
+    "def inject_css():\n",
+    "    st.markdown(\n",
+    "        \"\"\"\n",
+    "        <style>\n",
+    "        .stApp {\n",
+    "            background:\n",
+    "                radial-gradient(circle at top left, rgba(99, 102, 241, 0.18), transparent 30%),\n",
+    "                radial-gradient(circle at top right, rgba(14, 165, 233, 0.14), transparent 28%),\n",
+    "                linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);\n",
+    "        }\n",
+    "        section[data-testid=\"stSidebar\"] {\n",
+    "            background: rgba(255, 255, 255, 0.78);\n",
+    "            border-right: 1px solid rgba(148, 163, 184, 0.22);\n",
+    "        }\n",
+    "        .hero-card {\n",
+    "            padding: 28px 30px;\n",
+    "            border-radius: 26px;\n",
+    "            background: linear-gradient(135deg, #312e81 0%, #2563eb 50%, #06b6d4 100%);\n",
+    "            color: white;\n",
+    "            box-shadow: 0 18px 45px rgba(30, 64, 175, 0.28);\n",
+    "            margin-bottom: 22px;\n",
+    "        }\n",
+    "        .hero-title {\n",
+    "            font-size: 2.25rem;\n",
+    "            font-weight: 850;\n",
+    "            margin-bottom: 8px;\n",
+    "            letter-spacing: -0.04em;\n",
+    "        }\n",
+    "        .hero-subtitle {\n",
+    "            font-size: 1.02rem;\n",
+    "            opacity: 0.95;\n",
+    "            line-height: 1.65;\n",
+    "        }\n",
+    "        .glass-card {\n",
+    "            padding: 18px 20px;\n",
+    "            border-radius: 22px;\n",
+    "            background: rgba(255, 255, 255, 0.86);\n",
+    "            border: 1px solid rgba(148, 163, 184, 0.22);\n",
+    "            box-shadow: 0 12px 30px rgba(15, 23, 42, 0.07);\n",
+    "            min-height: 132px;\n",
+    "            margin-bottom: 16px;\n",
+    "        }\n",
+    "        .event-title {\n",
+    "            font-size: 1.07rem;\n",
+    "            font-weight: 800;\n",
+    "            color: #0f172a;\n",
+    "            margin-bottom: 12px;\n",
+    "            word-break: keep-all;\n",
+    "        }\n",
+    "        .event-line {\n",
+    "            color: #334155;\n",
+    "            font-size: 0.92rem;\n",
+    "            margin: 5px 0;\n",
+    "        }\n",
+    "        .badge {\n",
+    "            display: inline-block;\n",
+    "            padding: 5px 10px;\n",
+    "            border-radius: 999px;\n",
+    "            font-size: 0.78rem;\n",
+    "            font-weight: 800;\n",
+    "            margin-right: 6px;\n",
+    "        }\n",
+    "        .priority-high {\n",
+    "            color: #991b1b;\n",
+    "            background: #fee2e2;\n",
+    "        }\n",
+    "        .priority-medium {\n",
+    "            color: #1e3a8a;\n",
+    "            background: #dbeafe;\n",
+    "        }\n",
+    "        .priority-low {\n",
+    "            color: #166534;\n",
+    "            background: #dcfce7;\n",
+    "        }\n",
+    "        .mini-card {\n",
+    "            padding: 15px 16px;\n",
+    "            border-radius: 18px;\n",
+    "            background: rgba(255, 255, 255, 0.82);\n",
+    "            border: 1px solid rgba(148, 163, 184, 0.20);\n",
+    "            box-shadow: 0 8px 22px rgba(15, 23, 42, 0.06);\n",
+    "        }\n",
+    "        .mini-label {\n",
+    "            color: #64748b;\n",
+    "            font-size: 0.82rem;\n",
+    "            font-weight: 700;\n",
+    "        }\n",
+    "        .mini-value {\n",
+    "            color: #0f172a;\n",
+    "            font-size: 1.18rem;\n",
+    "            font-weight: 850;\n",
+    "            margin-top: 3px;\n",
+    "        }\n",
+    "        div[data-testid=\"stChatMessage\"] {\n",
+    "            border-radius: 18px;\n",
+    "            background: rgba(255, 255, 255, 0.70);\n",
+    "            border: 1px solid rgba(148, 163, 184, 0.14);\n",
+    "        }\n",
+    "        .stButton>button {\n",
+    "            border-radius: 14px;\n",
+    "            border: 1px solid rgba(99, 102, 241, 0.28);\n",
+    "            background: rgba(255, 255, 255, 0.86);\n",
+    "            transition: 0.15s ease;\n",
+    "        }\n",
+    "        .stButton>button:hover {\n",
+    "            transform: translateY(-1px);\n",
+    "            border-color: rgba(37, 99, 235, 0.65);\n",
+    "            box-shadow: 0 8px 18px rgba(37, 99, 235, 0.13);\n",
+    "        }\n",
+    "        </style>\n",
+    "        \"\"\",\n",
+    "        unsafe_allow_html=True,\n",
+    "    )\n",
+    "\n",
+    "\n",
+    "def safe_text(value: Any, default: str = \"-\") -> str:\n",
+    "    text = str(value) if value not in [None, \"\"] else default\n",
+    "    return (\n",
+    "        text.replace(\"&\", \"&amp;\")\n",
+    "        .replace(\"<\", \"&lt;\")\n",
+    "        .replace(\">\", \"&gt;\")\n",
+    "        .replace('\"', \"&quot;\")\n",
+    "    )\n",
+    "\n",
+    "\n",
+    "def render_hero():\n",
+    "    ctx = current_date_context()\n",
+    "    st.markdown(\n",
+    "        f\"\"\"\n",
+    "        <div class=\"hero-card\">\n",
+    "            <div class=\"hero-title\">📅 일정 비서 AI</div>\n",
+    "            <div class=\"hero-subtitle\">\n",
+    "                오늘 기준 날짜는 <b>{ctx['today']} ({ctx['weekday']})</b>입니다.<br>\n",
+    "                “오늘 약속”, “내일 시험”, “월요일 회의”처럼 적으면 현재 날짜 기준으로 자동 계산해드려요.\n",
+    "            </div>\n",
+    "        </div>\n",
+    "        \"\"\",\n",
+    "        unsafe_allow_html=True,\n",
+    "    )\n",
+    "\n",
+    "\n",
+    "def render_stat_cards(plan: Dict[str, Any], errors: List[str]):\n",
+    "    events = plan.get(\"events\", [])\n",
+    "    first_event = events[0] if events else {}\n",
+    "    first_label = \"없음\"\n",
+    "    if first_event:\n",
+    "        first_label = f\"{first_event.get('date') or '날짜 미정'} {first_event.get('start_time') or '시간 미정'}\"\n",
+    "\n",
+    "    c1, c2, c3 = st.columns(3)\n",
+    "    cards = [\n",
+    "        (\"총 일정\", f\"{len(events)}개\"),\n",
+    "        (\"확인 필요\", f\"{len(errors)}개\"),\n",
+    "        (\"가장 빠른 일정\", first_label),\n",
+    "    ]\n",
+    "    for col, (label, value) in zip([c1, c2, c3], cards):\n",
+    "        with col:\n",
+    "            st.markdown(\n",
+    "                f\"\"\"\n",
+    "                <div class=\"mini-card\">\n",
+    "                    <div class=\"mini-label\">{safe_text(label)}</div>\n",
+    "                    <div class=\"mini-value\">{safe_text(value)}</div>\n",
+    "                </div>\n",
+    "                \"\"\",\n",
+    "                unsafe_allow_html=True,\n",
+    "            )\n",
+    "\n",
+    "\n",
+    "def render_event_cards(events: List[Dict[str, Any]]):\n",
+    "    if not events:\n",
+    "        st.info(\"아직 정리된 일정이 없어요. 채팅창에 일정을 입력해 주세요.\")\n",
+    "        return\n",
+    "\n",
+    "    st.subheader(\"📌 일정 카드\")\n",
+    "    cols = st.columns(3)\n",
+    "    for idx, event in enumerate(events):\n",
+    "        priority = PRIORITY_META.get(event.get(\"priority\"), PRIORITY_META[\"medium\"])\n",
+    "        category = CATEGORY_META.get(event.get(\"category\"), \"📌 기타\")\n",
+    "        time_text = event.get(\"start_time\") or \"시간 미정\"\n",
+    "        if event.get(\"end_time\"):\n",
+    "            time_text += f\" ~ {event['end_time']}\"\n",
+    "        location = event.get(\"location\") or \"장소 미정\"\n",
+    "        notes = event.get(\"notes\") or \"메모 없음\"\n",
+    "\n",
+    "        with cols[idx % 3]:\n",
+    "            st.markdown(\n",
+    "                f\"\"\"\n",
+    "                <div class=\"glass-card\">\n",
+    "                    <div>\n",
+    "                        <span class=\"badge {priority['class']}\">{priority['emoji']} {priority['label']}</span>\n",
+    "                        <span class=\"badge priority-medium\">{safe_text(category)}</span>\n",
+    "                    </div>\n",
+    "                    <div class=\"event-title\">{safe_text(event.get('title', '제목 미정'))}</div>\n",
+    "                    <div class=\"event-line\">🗓️ {safe_text(event.get('date') or '날짜 미정')}</div>\n",
+    "                    <div class=\"event-line\">⏰ {safe_text(time_text)}</div>\n",
+    "                    <div class=\"event-line\">📍 {safe_text(location)}</div>\n",
+    "                    <div class=\"event-line\">📝 {safe_text(notes)}</div>\n",
+    "                </div>\n",
+    "                \"\"\",\n",
+    "                unsafe_allow_html=True,\n",
+    "            )\n",
+    "\n",
+    "\n",
+    "def render_result(result: Dict[str, Any]):\n",
+    "    if result.get(\"schedule_error\"):\n",
+    "        st.error(result[\"schedule_error\"])\n",
+    "        return\n",
+    "\n",
+    "    plan = result.get(\"plan_result\", {})\n",
+    "    events = plan.get(\"events\", [])\n",
+    "    errors = result.get(\"validation_errors\") or plan.get(\"validation_errors\", [])\n",
+    "\n",
+    "    render_stat_cards(plan, errors)\n",
+    "    render_event_cards(events)\n",
+    "\n",
+    "    if errors:\n",
+    "        st.warning(\"\\n\".join(f\"- {msg}\" for msg in errors))\n",
+    "\n",
+    "    with st.expander(\"구조화 JSON 보기\"):\n",
+    "        st.json(result.get(\"schedule_json\", {}))\n",
+    "    with st.expander(\"일정 정리 결과 데이터 보기\"):\n",
+    "        st.json(result.get(\"plan_result\", {}))\n",
+    "    with st.expander(\"LangGraph 실행 Trace\"):\n",
+    "        st.write(\" → \".join(result.get(\"trace\", [])))\n",
+    "\n",
+    "\n",
+    "def run_schedule_assistant(raw_input: str, graph) -> Dict[str, Any]:\n",
+    "    initial_state: ScheduleState = {\n",
+    "        \"raw_input\": raw_input,\n",
+    "        \"trace\": [],\n",
+    "        \"feedback_history\": st.session_state.get(\"feedback_history\", []),\n",
+    "    }\n",
+    "    if st.session_state.get(\"schedule_json\"):\n",
+    "        initial_state[\"schedule_json\"] = st.session_state[\"schedule_json\"]\n",
+    "\n",
+    "    result = graph.invoke(initial_state)\n",
+    "    if result.get(\"schedule_json\") and not result.get(\"schedule_error\"):\n",
+    "        st.session_state[\"schedule_json\"] = result[\"schedule_json\"]\n",
+    "    if result.get(\"plan_result\"):\n",
+    "        st.session_state[\"last_plan\"] = result[\"plan_result\"]\n",
+    "    st.session_state[\"last_trace\"] = result.get(\"trace\", [])\n",
+    "    st.session_state[\"feedback_history\"] = result.get(\"feedback_history\", st.session_state.get(\"feedback_history\", []))\n",
+    "    return result\n",
+    "\n",
+    "\n",
+    "def main():\n",
+    "    st.set_page_config(page_title=\"일정 비서 AI\", page_icon=\"📅\", layout=\"wide\")\n",
+    "    inject_css()\n",
+    "    ensure_state()\n",
+    "    render_hero()\n",
+    "\n",
+    "    with st.sidebar:\n",
+    "        st.header(\"⚙️ 설정\")\n",
+    "        env_key = get_api_key_from_env_or_secrets()\n",
+    "        api_key_input = st.text_input(\n",
+    "            \"OPENAI_API_KEY\",\n",
+    "            value=\"\",\n",
+    "            type=\"password\",\n",
+    "            help=\"비워두면 환경변수/Secrets의 OPENAI_API_KEY를 사용합니다.\",\n",
+    "        )\n",
+    "        api_key = api_key_input or env_key\n",
+    "        model = st.text_input(\"Model\", value=get_default_model())\n",
+    "        st.caption(\"API Key가 있으면 GPT가 자연어를 더 정확히 파싱하고, 없으면 규칙 기반 fallback으로 동작합니다.\")\n",
+    "\n",
+    "        st.divider()\n",
+    "        st.header(\"📋 예시 입력\")\n",
+    "        for i, example in enumerate(EXAMPLES, start=1):\n",
+    "            if st.button(f\"예시 {i}\", key=f\"example_{i}\", use_container_width=True):\n",
+    "                st.session_state[\"pending_example\"] = example\n",
+    "\n",
+    "        st.divider()\n",
+    "        st.markdown(\n",
+    "            \"\"\"\n",
+    "            **지원 기능**\n",
+    "            - 오늘/내일/모레 날짜 자동 계산\n",
+    "            - 요일 기반 날짜 계산\n",
+    "            - 자연어 일정 파싱\n",
+    "            - 일정 추가/수정 요청 반영\n",
+    "            - 시간순 정렬\n",
+    "            - 일정 충돌 확인\n",
+    "            - 체크리스트 생성\n",
+    "            \"\"\"\n",
+    "        )\n",
+    "        if st.button(\"🗑️ 대화 초기화\", use_container_width=True):\n",
+    "            reset_session()\n",
+    "            st.rerun()\n",
+    "\n",
+    "    client = make_client(api_key)\n",
+    "    graph = build_graph(client, model)\n",
+    "\n",
+    "    if not api_key:\n",
+    "        st.warning(\"OPENAI_API_KEY가 없어 규칙 기반 fallback으로 동작합니다. API Key를 넣으면 자연어 파싱 성능이 더 좋아집니다.\")\n",
+    "\n",
+    "    if \"pending_example\" in st.session_state:\n",
+    "        example = st.session_state.pop(\"pending_example\")\n",
+    "        st.session_state.messages.append({\"role\": \"user\", \"content\": example})\n",
+    "        result = run_schedule_assistant(example, graph)\n",
+    "        st.session_state.messages.append({\"role\": \"assistant\", \"content\": result.get(\"final_message\", \"결과를 생성하지 못했어요.\")})\n",
+    "        st.session_state[\"latest_result\"] = result\n",
+    "        st.rerun()\n",
+    "\n",
+    "    for message in st.session_state.messages:\n",
+    "        with st.chat_message(message[\"role\"]):\n",
+    "            st.markdown(message[\"content\"])\n",
+    "\n",
+    "    prompt = st.chat_input(\"예: 내일 오후 2시 팀플 회의, 5시 알바 있어. 일정 정리해줘.\")\n",
+    "    if prompt:\n",
+    "        st.session_state.messages.append({\"role\": \"user\", \"content\": prompt})\n",
+    "        with st.chat_message(\"user\"):\n",
+    "            st.markdown(prompt)\n",
+    "        result = run_schedule_assistant(prompt, graph)\n",
+    "        answer = result.get(\"final_message\", \"결과를 생성하지 못했어요.\")\n",
+    "        st.session_state.messages.append({\"role\": \"assistant\", \"content\": answer})\n",
+    "        st.session_state[\"latest_result\"] = result\n",
+    "        with st.chat_message(\"assistant\"):\n",
+    "            st.markdown(answer)\n",
+    "        render_result(result)\n",
+    "    elif st.session_state.get(\"latest_result\"):\n",
+    "        render_result(st.session_state[\"latest_result\"])\n",
+    "\n",
+    "\n",
+    "if __name__ == \"__main__\":\n",
+    "    main()\n"
+   ],
+   "id": "kZrmtjokDPy4"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "VTCJcDgBDPy5"
+   },
+   "source": [
+    "## 6. 앱 파일 합치기"
+   ],
+   "id": "VTCJcDgBDPy5"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "metadata": {
+    "id": "ExhdfuAiDPy5"
+   },
+   "outputs": [],
+   "source": [
+    "!cat parts/01_schedule_core.py parts/02_langgraph_connection.py parts/03_streamlit_ui.py > apps/schedule_assistant_app.py"
+   ],
+   "id": "ExhdfuAiDPy5"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "DaI6J1peDPy5"
+   },
+   "source": [
+    "## 7. requirements.txt 저장"
+   ],
+   "id": "DaI6J1peDPy5"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "metadata": {
+    "id": "oJ_ywzWBDPy5",
+    "outputId": "c0c5bcb2-5330-4c92-dea7-9dc1134d7bac",
+    "colab": {
+     "base_uri": "https://localhost:8080/"
+    }
+   },
+   "outputs": [
+    {
+     "output_type": "stream",
+     "name": "stdout",
+     "text": [
+      "Overwriting requirements.txt\n"
+     ]
+    }
+   ],
+   "source": [
+    "%%writefile requirements.txt\n",
+    "streamlit\n",
+    "langgraph\n",
+    "openai\n"
+   ],
+   "id": "oJ_ywzWBDPy5"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "F1WpxNA8DPy5"
+   },
+   "source": [
+    "## 8. 구문 검사"
+   ],
+   "id": "F1WpxNA8DPy5"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 9,
+   "metadata": {
+    "id": "iQD83hjvDPy5",
+    "outputId": "a66b92ef-d603-400f-87df-45267077229c",
+    "colab": {
+     "base_uri": "https://localhost:8080/"
+    }
+   },
+   "outputs": [
+    {
+     "output_type": "stream",
+     "name": "stdout",
+     "text": [
+      "✅ 구문 검사 완료\n"
+     ]
+    }
+   ],
+   "source": [
+    "!python -m py_compile apps/schedule_assistant_app.py\n",
+    "print(\"✅ 구문 검사 완료\")"
+   ],
+   "id": "iQD83hjvDPy5"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "YFfl4JeIDPy5"
+   },
+   "source": [
+    "## 9. 그래프 구조 확인"
+   ],
+   "id": "YFfl4JeIDPy5"
+  },
+  {
+   "cell_type": "code",
+   "source": [
+    "!pip install grandalf"
+   ],
+   "metadata": {
+    "colab": {
+     "base_uri": "https://localhost:8080/"
+    },
+    "id": "lpqR04DEEUHn",
+    "outputId": "c224bdcb-37a1-4491-c3fb-e2ef02e69561"
+   },
+   "id": "lpqR04DEEUHn",
+   "execution_count": 10,
+   "outputs": [
+    {
+     "output_type": "stream",
+     "name": "stdout",
+     "text": [
+      "Requirement already satisfied: grandalf in /usr/local/lib/python3.12/dist-packages (0.8)\n",
+      "Requirement already satisfied: pyparsing in /usr/local/lib/python3.12/dist-packages (from grandalf) (3.3.2)\n"
+     ]
+    }
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 11,
+   "metadata": {
+    "id": "OZIkuFC4DPy6",
+    "outputId": "d6cf63df-7d2c-4108-9eef-4dd57d4428c9",
+    "colab": {
+     "base_uri": "https://localhost:8080/"
+    }
+   },
+   "outputs": [
+    {
+     "output_type": "stream",
+     "name": "stdout",
+     "text": [
+      "                  +-----------+                   \n",
+      "                  | __start__ |                   \n",
+      "                  +-----------+                   \n",
+      "                         *                        \n",
+      "                         *                        \n",
+      "                         *                        \n",
+      "                 +-------------+                  \n",
+      "                 | detect_mode |                  \n",
+      "                 +-------------+                  \n",
+      "                ...            ...                \n",
+      "              ..                  ..              \n",
+      "            ..                      ..            \n",
+      "+------------------+           +---------------+  \n",
+      "| feedback_parsing |           | input_parsing |  \n",
+      "+------------------+           +---------------+  \n",
+      "                ***            ***                \n",
+      "                   **        **                   \n",
+      "                     **    **                     \n",
+      "                +----------------+                \n",
+      "                | schedule_check |                \n",
+      "                +----------------+                \n",
+      "                 ..            ...                \n",
+      "               ..                 ..              \n",
+      "             ..                     ..            \n",
+      "  +---------------+                   ..          \n",
+      "  | route_request |                    .          \n",
+      "  +---------------+                    .          \n",
+      "          *                            .          \n",
+      "          *                            .          \n",
+      "          *                            .          \n",
+      " +-----------------+                  ..          \n",
+      " | plan_generation |                ..            \n",
+      " +-----------------+              ..              \n",
+      "                 **            ...                \n",
+      "                   **        ..                   \n",
+      "                     **    ..                     \n",
+      "              +-------------------+               \n",
+      "              | report_generation |               \n",
+      "              +-------------------+               \n",
+      "                         *                        \n",
+      "                         *                        \n",
+      "                         *                        \n",
+      "                   +---------+                    \n",
+      "                   | __end__ |                    \n",
+      "                   +---------+                    \n"
+     ]
+    }
+   ],
+   "source": [
+    "import importlib.util\n",
+    "\n",
+    "spec = importlib.util.spec_from_file_location(\"schedule_app\", \"apps/schedule_assistant_app.py\")\n",
+    "schedule_app = importlib.util.module_from_spec(spec)\n",
+    "spec.loader.exec_module(schedule_app)\n",
+    "\n",
+    "graph = schedule_app.build_graph(None, \"gpt-4.1-mini\")\n",
+    "print(graph.get_graph().draw_ascii())"
+   ],
+   "id": "OZIkuFC4DPy6"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "V27ZhJ7tDPy6"
+   },
+   "source": [
+    "## 10. Streamlit 실행\n",
+    "\n",
+    "Colab에서는 아래 셀을 실행한 뒤 출력되는 URL을 열면 됩니다."
+   ],
+   "id": "V27ZhJ7tDPy6"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 12,
+   "metadata": {
+    "id": "ya00nEU6DPy6",
+    "colab": {
+     "base_uri": "https://localhost:8080/"
+    },
+    "outputId": "9e3dc347-3d27-4435-eb7b-9a9a7ea8f0ca"
+   },
+   "outputs": [
+    {
+     "output_type": "stream",
+     "name": "stdout",
+     "text": [
+      "\n",
+      "Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.\n",
+      "\u001b[0m\n",
+      "2026-07-05 07:01:09.587 Uvicorn server started on 0.0.0.0:8501\n",
+      "\u001b[0m\n",
+      "\u001b[34m\u001b[1m  You can now view your Streamlit app in your browser.\u001b[0m\n",
+      "\u001b[0m\n",
+      "\u001b[34m  Local URL: \u001b[0m\u001b[1mhttp://localhost:8501\u001b[0m\n",
+      "\u001b[34m  Network URL: \u001b[0m\u001b[1mhttp://172.28.0.12:8501\u001b[0m\n",
+      "\u001b[34m  External URL: \u001b[0m\u001b[1mhttp://34.178.173.133:8501\u001b[0m\n",
+      "\u001b[0m\n",
+      "\u001b[34m  Stopping...\u001b[0m\n"
+     ]
+    }
+   ],
+   "source": [
+    "!streamlit run apps/schedule_assistant_app.py --server.port 8501"
+   ],
+   "id": "ya00nEU6DPy6"
   }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python",
+   "version": "3.11"
+  },
+  "colab": {
+   "provenance": []
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
 }
-""".strip()
-
-FEEDBACK_SYSTEM_PROMPT = """
-너는 기존 일정 JSON에 사용자의 수정 요청을 반영하는 일정 편집기다.
-반드시 수정이 반영된 전체 JSON 객체만 반환한다.
-
-규칙:
-1. 기존 일정 중 삭제/변경 요청이 있으면 반영한다.
-2. 추가 일정이 있으면 events 배열에 추가한다.
-3. 애매한 내용은 notes에 남기고 날짜나 시간은 null로 둔다.
-4. 새로 계산하거나 없는 일정을 상상해서 추가하지 않는다.
-5. 반환 형식은 기존 JSON과 같은 스키마를 유지한다.
-""".strip()
-
-REPORT_SYSTEM_PROMPT = """
-너는 일정 정리 비서다.
-입력으로 받은 plan_result와 validation_errors만 근거로 사용해서 답변한다.
-출력은 다음 구조로 작성한다.
-
-1. 오늘/이번 일정 한 줄 요약
-2. 시간순 일정표
-3. 충돌 또는 애매한 일정 안내
-4. 바로 복붙 가능한 체크리스트
-
-친절하고 간단하게 작성한다.
-""".strip()
-
-
-class ScheduleState(TypedDict, total=False):
-    raw_input: str
-    mode: Literal["initial", "feedback"]
-    schedule_json: Dict[str, Any]
-    validation_errors: List[str]
-    schedule_error: str
-    plan_result: Dict[str, Any]
-    final_message: str
-    feedback_history: List[str]
-    trace: Annotated[List[str], operator.add]
-
-
-def get_setting_from_env_or_secrets(name: str, default: str = "") -> str:
-    try:
-        if name in st.secrets:
-            return str(st.secrets[name])
-    except Exception:
-        pass
-    return os.getenv(name, default)
-
-
-def get_api_key_from_env_or_secrets() -> str:
-    return get_setting_from_env_or_secrets("OPENAI_API_KEY", "")
-
-
-def get_default_model() -> str:
-    return get_setting_from_env_or_secrets("OPENAI_MODEL", "gpt-4.1-mini")
-
-
-def make_client(api_key: str) -> Optional[OpenAI]:
-    if not api_key:
-        return None
-    return OpenAI(api_key=api_key)
-
-
-def extract_json_object(text: str) -> Dict[str, Any]:
-    text = (text or "").strip()
-    if not text:
-        raise ValueError("빈 응답입니다.")
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S)
-    if fenced:
-        return json.loads(fenced.group(1))
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        return json.loads(text[start : end + 1])
-    raise ValueError("JSON 객체를 찾지 못했습니다.")
-
-
-def call_llm_json(client: Optional[OpenAI], model: str, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
-    if client is None:
-        raise RuntimeError("OPENAI_API_KEY가 없어 fallback 파서를 사용합니다.")
-    try:
-        response = client.responses.create(
-            model=model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0,
-        )
-        return extract_json_object(response.output_text)
-    except Exception:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0,
-        )
-        return extract_json_object(response.choices[0].message.content or "")
-
-
-def normalize_date(text: str, base: Optional[datetime] = None) -> Optional[str]:
-    base = base or datetime.now()
-    if "오늘" in text:
-        return base.strftime("%Y-%m-%d")
-    if "내일" in text:
-        return (base + timedelta(days=1)).strftime("%Y-%m-%d")
-    if "모레" in text:
-        return (base + timedelta(days=2)).strftime("%Y-%m-%d")
-
-    match = re.search(r"(20\d{2})[-./년\s]+(\d{1,2})[-./월\s]+(\d{1,2})", text)
-    if match:
-        y, m, d = map(int, match.groups())
-        return datetime(y, m, d).strftime("%Y-%m-%d")
-
-    match = re.search(r"(\d{1,2})\s*월\s*(\d{1,2})\s*일", text)
-    if match:
-        m, d = map(int, match.groups())
-        y = base.year
-        candidate = datetime(y, m, d)
-        if candidate.date() < base.date() - timedelta(days=1):
-            candidate = datetime(y + 1, m, d)
-        return candidate.strftime("%Y-%m-%d")
-
-    match = re.search(r"(\d{1,2})/(\d{1,2})", text)
-    if match:
-        m, d = map(int, match.groups())
-        y = base.year
-        candidate = datetime(y, m, d)
-        if candidate.date() < base.date() - timedelta(days=1):
-            candidate = datetime(y + 1, m, d)
-        return candidate.strftime("%Y-%m-%d")
-
-    weekdays = {"월요일": 0, "화요일": 1, "수요일": 2, "목요일": 3, "금요일": 4, "토요일": 5, "일요일": 6}
-    for word, target in weekdays.items():
-        if word in text:
-            delta = (target - base.weekday()) % 7
-            if delta == 0:
-                delta = 7
-            return (base + timedelta(days=delta)).strftime("%Y-%m-%d")
-    return None
-
-
-def _time_matches(text: str):
-    pattern = re.compile(r"(?:(오전|오후|저녁|밤|낮|새벽)\s*)?(\d{1,2})(?:\s*시|:)(?:\s*(\d{1,2})\s*분?)?")
-    return list(pattern.finditer(text))
-
-
-def normalize_time_from_match(match: re.Match) -> Optional[str]:
-    meridiem = match.group(1) or ""
-    hour = int(match.group(2))
-    minute = int(match.group(3) or 0)
-    if meridiem in ["오후", "저녁", "밤"] and hour < 12:
-        hour += 12
-    if meridiem in ["오전", "새벽"] and hour == 12:
-        hour = 0
-    if 0 <= hour <= 23 and 0 <= minute <= 59:
-        return f"{hour:02d}:{minute:02d}"
-    return None
-
-
-def guess_priority(text: str) -> str:
-    high_keywords = ["시험", "마감", "제출", "발표", "면접", "병원", "알바", "회의", "중요"]
-    low_keywords = ["놀", "데이트", "게임", "산책", "카페", "친구"]
-    if any(k in text for k in high_keywords):
-        return "high"
-    if any(k in text for k in low_keywords):
-        return "low"
-    return "medium"
-
-
-def guess_category(text: str) -> str:
-    if any(k in text for k in ["수업", "과제", "시험", "발표", "학교", "강의"]):
-        return "school"
-    if any(k in text for k in ["알바", "근무", "회의", "출근", "업무"]):
-        return "work"
-    if any(k in text for k in ["병원", "운동", "헬스", "약", "치과"]):
-        return "health"
-    if any(k in text for k in ["친구", "데이트", "약속", "카페", "영화"]):
-        return "personal"
-    return "etc"
-
-
-def clean_title(text: str) -> str:
-    title = text
-    remove_patterns = [
-        r"20\d{2}[-./년\s]+\d{1,2}[-./월\s]+\d{1,2}",
-        r"\d{1,2}\s*월\s*\d{1,2}\s*일",
-        r"\d{1,2}/\d{1,2}",
-        r"오늘|내일|모레|월요일|화요일|수요일|목요일|금요일|토요일|일요일",
-        r"(?:(오전|오후|저녁|밤|낮|새벽)\s*)?\d{1,2}(?:\s*시|:)(?:\s*\d{1,2}\s*분?)?",
-        r"부터|까지|에|에는|일정|해야\s*돼|해야돼|있어",
-    ]
-    for pat in remove_patterns:
-        title = re.sub(pat, " ", title)
-    title = re.sub(r"\s+", " ", title).strip(" ,.-")
-    return title or "제목 미정 일정"
-
-
-def fallback_parse_schedule(raw_input: str) -> Dict[str, Any]:
-    text = raw_input.strip()
-    chunks = [c.strip() for c in re.split(r"[\n,;]+|그리고|또", text) if c.strip()]
-    if not chunks:
-        chunks = [text]
-
-    events: List[Dict[str, Any]] = []
-    inherited_date = normalize_date(text)
-    for chunk in chunks:
-        date_value = normalize_date(chunk) or inherited_date
-        matches = _time_matches(chunk)
-        start_time = normalize_time_from_match(matches[0]) if matches else None
-        end_time = normalize_time_from_match(matches[1]) if len(matches) >= 2 else None
-        event = {
-            "title": clean_title(chunk),
-            "date": date_value,
-            "start_time": start_time,
-            "end_time": end_time,
-            "location": None,
-            "priority": guess_priority(chunk),
-            "category": guess_category(chunk),
-            "notes": "fallback 파서로 추출됨",
-        }
-        events.append(event)
-
-    return {"events": events, "preferences": {"buffer_minutes": 30, "sort_basis": "time"}}
-
-
-def ensure_schedule_schema(data: Dict[str, Any]) -> Dict[str, Any]:
-    events = data.get("events") or []
-    normalized = []
-    for event in events:
-        if not isinstance(event, dict):
-            continue
-        normalized.append(
-            {
-                "title": event.get("title") or "제목 미정 일정",
-                "date": event.get("date"),
-                "start_time": event.get("start_time"),
-                "end_time": event.get("end_time"),
-                "location": event.get("location"),
-                "priority": event.get("priority") or "medium",
-                "category": event.get("category") or "etc",
-                "notes": event.get("notes") or "",
-            }
-        )
-    preferences = data.get("preferences") or {}
-    preferences.setdefault("buffer_minutes", 30)
-    preferences.setdefault("sort_basis", "time")
-    return {"events": normalized, "preferences": preferences}
-
-
-def parse_datetime(event: Dict[str, Any]) -> Optional[datetime]:
-    date_value = event.get("date")
-    time_value = event.get("start_time")
-    if not date_value or not time_value:
-        return None
-    try:
-        return datetime.strptime(f"{date_value} {time_value}", "%Y-%m-%d %H:%M")
-    except Exception:
-        return None
-
-
-def end_datetime(event: Dict[str, Any]) -> Optional[datetime]:
-    start = parse_datetime(event)
-    if start is None:
-        return None
-    end_time = event.get("end_time")
-    if end_time:
-        try:
-            return datetime.strptime(f"{event.get('date')} {end_time}", "%Y-%m-%d %H:%M")
-        except Exception:
-            pass
-    return start + timedelta(hours=1)
-
-
-def format_event_line(event: Dict[str, Any]) -> str:
-    date_part = event.get("date") or "날짜 미정"
-    time_part = event.get("start_time") or "시간 미정"
-    if event.get("end_time"):
-        time_part += f"~{event['end_time']}"
-    priority_icon = {"high": "🔥", "medium": "•", "low": "▫️"}.get(event.get("priority"), "•")
-    location = f" @ {event['location']}" if event.get("location") else ""
-    return f"{priority_icon} {date_part} {time_part} | {event.get('title', '제목 미정')}{location}"
-
-
-# =========================
-# LangGraph Node 함수들
-# =========================
-
-def detect_mode_node(state: ScheduleState) -> Dict[str, Any]:
-    raw = state.get("raw_input", "")
-    has_existing = bool(state.get("schedule_json", {}).get("events"))
-    feedback_words = ["수정", "변경", "바꿔", "옮겨", "추가", "삭제", "빼", "취소", "다시"]
-    mode: Literal["initial", "feedback"] = "feedback" if has_existing and any(w in raw for w in feedback_words) else "initial"
-    return {"mode": mode, "trace": [f"detect_mode:{mode}"]}
-
-
-def input_parsing_node_factory(client: Optional[OpenAI], model: str):
-    def input_parsing_node(state: ScheduleState) -> Dict[str, Any]:
-        raw = state.get("raw_input", "")
-        try:
-            parsed = call_llm_json(client, model, PARSE_SYSTEM_PROMPT, raw)
-            parsed = ensure_schedule_schema(parsed)
-            trace = "input_parsing:llm"
-        except Exception:
-            parsed = fallback_parse_schedule(raw)
-            trace = "input_parsing:fallback"
-        return {"schedule_json": parsed, "trace": [trace]}
-
-    return input_parsing_node
-
-
-def feedback_parsing_node_factory(client: Optional[OpenAI], model: str):
-    def feedback_parsing_node(state: ScheduleState) -> Dict[str, Any]:
-        raw = state.get("raw_input", "")
-        previous = ensure_schedule_schema(state.get("schedule_json", {}))
-        try:
-            user_prompt = "기존 일정 JSON:\n" + json.dumps(previous, ensure_ascii=False) + "\n\n수정 요청:\n" + raw
-            parsed = call_llm_json(client, model, FEEDBACK_SYSTEM_PROMPT, user_prompt)
-            parsed = ensure_schedule_schema(parsed)
-            trace = "feedback_parsing:llm"
-        except Exception:
-            # fallback에서는 삭제/변경까지 완벽히 처리하기 어렵기 때문에 새 일정은 추가하고, 수정 문장은 기록합니다.
-            parsed = previous
-            additional = fallback_parse_schedule(raw).get("events", [])
-            if any(w in raw for w in ["추가", "또", "그리고"]):
-                parsed["events"].extend(additional)
-            parsed.setdefault("preferences", {"buffer_minutes": 30, "sort_basis": "time"})
-            trace = "feedback_parsing:fallback"
-        history = state.get("feedback_history", []) + [raw]
-        return {"schedule_json": parsed, "feedback_history": history, "trace": [trace]}
-
-    return feedback_parsing_node
-
-
-def schedule_check_node(state: ScheduleState) -> Dict[str, Any]:
-    schedule = ensure_schedule_schema(state.get("schedule_json", {}))
-    events = schedule.get("events", [])
-    messages: List[str] = []
-    conflicts: List[str] = []
-
-    if not events:
-        return {"schedule_error": "일정 내용을 찾지 못했어요. 예: '내일 오후 2시 데이터분석 과제 제출'처럼 입력해 주세요.", "trace": ["schedule_check:error"]}
-
-    for event in events:
-        if not event.get("date"):
-            messages.append(f"'{event.get('title')}' 일정의 날짜가 명확하지 않아요.")
-        if not event.get("start_time"):
-            messages.append(f"'{event.get('title')}' 일정의 시작 시간이 명확하지 않아요.")
-
-    dated_events = [e for e in events if parse_datetime(e) is not None]
-    dated_events.sort(key=lambda e: parse_datetime(e) or datetime.max)
-    for prev, cur in zip(dated_events, dated_events[1:]):
-        prev_end = end_datetime(prev)
-        cur_start = parse_datetime(cur)
-        if prev_end and cur_start and prev.get("date") == cur.get("date") and cur_start < prev_end:
-            conflicts.append(f"'{prev.get('title')}' 일정과 '{cur.get('title')}' 일정 시간이 겹칠 수 있어요.")
-
-    all_messages = messages + conflicts
-    return {"validation_errors": all_messages, "trace": ["schedule_check:ok"]}
-
-
-def route_request_node(state: ScheduleState) -> Dict[str, Any]:
-    return {"trace": ["route_request:plan"]}
-
-
-def plan_generation_node(state: ScheduleState) -> Dict[str, Any]:
-    schedule = ensure_schedule_schema(state.get("schedule_json", {}))
-    events = schedule.get("events", [])
-    sorted_events = sorted(events, key=lambda e: (e.get("date") or "9999-99-99", e.get("start_time") or "99:99", {"high": 0, "medium": 1, "low": 2}.get(e.get("priority"), 1)))
-
-    grouped: Dict[str, List[Dict[str, Any]]] = {}
-    for event in sorted_events:
-        grouped.setdefault(event.get("date") or "날짜 미정", []).append(event)
-
-    checklist = [f"[ ] {event.get('title', '제목 미정')}" for event in sorted_events]
-    plan_result = {
-        "events": sorted_events,
-        "grouped": grouped,
-        "checklist": checklist,
-        "validation_errors": state.get("validation_errors", []),
-        "event_count": len(sorted_events),
-    }
-    return {"plan_result": plan_result, "trace": ["plan_generation"]}
-
-
-def report_generation_node_factory(client: Optional[OpenAI], model: str):
-    def report_generation_node(state: ScheduleState) -> Dict[str, Any]:
-        if state.get("schedule_error"):
-            return {"final_message": state["schedule_error"], "trace": ["report_generation:error"]}
-
-        plan = state.get("plan_result", {})
-        if client is not None:
-            try:
-                user_prompt = json.dumps(plan, ensure_ascii=False, indent=2)
-                response = client.responses.create(
-                    model=model,
-                    input=[
-                        {"role": "system", "content": REPORT_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=0.3,
-                )
-                return {"final_message": response.output_text, "trace": ["report_generation:llm"]}
-            except Exception:
-                pass
-
-        lines = ["## 📅 일정 정리 결과", ""]
-        lines.append(f"총 {plan.get('event_count', 0)}개의 일정을 정리했어요.")
-        lines.append("")
-        grouped = plan.get("grouped", {})
-        for date_value, events in grouped.items():
-            lines.append(f"### {date_value}")
-            for event in events:
-                lines.append(f"- {format_event_line(event)}")
-            lines.append("")
-        errors = plan.get("validation_errors", [])
-        if errors:
-            lines.append("### ⚠️ 확인 필요")
-            for msg in errors:
-                lines.append(f"- {msg}")
-            lines.append("")
-        lines.append("### ✅ 체크리스트")
-        for item in plan.get("checklist", []):
-            lines.append(f"- {item}")
-        return {"final_message": "\n".join(lines), "trace": ["report_generation:fallback"]}
-
-    return report_generation_node
-
-
-def mode_router(state: ScheduleState) -> str:
-    return state.get("mode", "initial")
-
-
-def schedule_check_router(state: ScheduleState) -> str:
-    if state.get("schedule_error"):
-        return "error"
-    return "ok"
-# 학생 실습 범위처럼 그래프 연결만 따로 분리한 파일입니다.
-def build_graph(client: Optional[OpenAI], model: str):
-    builder = StateGraph(ScheduleState)
-
-    # 1. Node 등록
-    builder.add_node("detect_mode", detect_mode_node)
-    builder.add_node("input_parsing", input_parsing_node_factory(client, model))
-    builder.add_node("feedback_parsing", feedback_parsing_node_factory(client, model))
-    builder.add_node("schedule_check", schedule_check_node)
-    builder.add_node("route_request", route_request_node)
-    builder.add_node("plan_generation", plan_generation_node)
-    builder.add_node("report_generation", report_generation_node_factory(client, model))
-
-    # 2. 시작점 연결
-    builder.add_edge(START, "detect_mode")
-
-    # 3. 최초 입력 / 수정 요청 분기
-    builder.add_conditional_edges(
-        "detect_mode",
-        mode_router,
-        {
-            "initial": "input_parsing",
-            "feedback": "feedback_parsing",
-        },
-    )
-
-    # 4. 두 파싱 경로를 검증 Node로 합치기
-    for node in ["input_parsing", "feedback_parsing"]:
-        builder.add_edge(node, "schedule_check")
-
-    # 5. 검증 결과에 따라 오류 리포트 또는 정상 일정 정리로 분기
-    builder.add_conditional_edges(
-        "schedule_check",
-        schedule_check_router,
-        {
-            "error": "report_generation",
-            "ok": "route_request",
-        },
-    )
-
-    # 6. 정상 경로와 종료 연결
-    builder.add_edge("route_request", "plan_generation")
-    builder.add_edge("plan_generation", "report_generation")
-    builder.add_edge("report_generation", END)
-
-    return builder.compile()
-EXAMPLES = [
-    "내일 오전 10시 자료구조 수업, 오후 2시 SQLD 공부, 저녁 7시 친구 약속 있어. SQLD 공부가 제일 중요해.",
-    "7월 10일 오후 3시 팀플 회의, 오후 4시 발표 준비, 오후 4시 30분 알바 가야 돼.",
-    "오늘 1시 병원, 3시 과제 제출, 6시 헬스장 일정 정리해줘.",
-    "월요일 오전 9시 수업, 오후 1시 점심 약속, 오후 2시부터 4시까지 공기업 IT 프로젝트 공부.",
-]
-
-
-def reset_session():
-    for key in ["messages", "schedule_json", "last_plan", "last_trace", "feedback_history"]:
-        st.session_state.pop(key, None)
-
-
-def ensure_state():
-    if "messages" not in st.session_state:
-        st.session_state.messages = [
-            {"role": "assistant", "content": "안녕하세요! 자연어로 일정을 입력하면 시간순으로 정리하고 충돌도 확인해드릴게요."}
-        ]
-    st.session_state.setdefault("feedback_history", [])
-
-
-def render_result(result: Dict[str, Any]):
-    if result.get("schedule_error"):
-        st.error(result["schedule_error"])
-        return
-
-    plan = result.get("plan_result", {})
-    events = plan.get("events", [])
-    if events:
-        st.subheader("📌 일정 카드")
-        cols = st.columns(min(3, max(1, len(events))))
-        for idx, event in enumerate(events):
-            with cols[idx % len(cols)]:
-                st.metric(event.get("title", "제목 미정"), event.get("start_time") or "시간 미정")
-                st.caption(f"{event.get('date') or '날짜 미정'} · 우선순위 {event.get('priority', 'medium')}")
-
-    if result.get("validation_errors"):
-        st.warning("\n".join(f"- {msg}" for msg in result["validation_errors"]))
-
-    with st.expander("구조화 JSON 보기"):
-        st.json(result.get("schedule_json", {}))
-    with st.expander("일정 정리 결과 데이터 보기"):
-        st.json(result.get("plan_result", {}))
-    with st.expander("LangGraph 실행 Trace"):
-        st.write(" → ".join(result.get("trace", [])))
-
-
-def run_schedule_assistant(raw_input: str, graph) -> Dict[str, Any]:
-    initial_state: ScheduleState = {
-        "raw_input": raw_input,
-        "trace": [],
-        "feedback_history": st.session_state.get("feedback_history", []),
-    }
-    if st.session_state.get("schedule_json"):
-        initial_state["schedule_json"] = st.session_state["schedule_json"]
-
-    result = graph.invoke(initial_state)
-    if result.get("schedule_json") and not result.get("schedule_error"):
-        st.session_state["schedule_json"] = result["schedule_json"]
-    if result.get("plan_result"):
-        st.session_state["last_plan"] = result["plan_result"]
-    st.session_state["last_trace"] = result.get("trace", [])
-    st.session_state["feedback_history"] = result.get("feedback_history", st.session_state.get("feedback_history", []))
-    return result
-
-
-def main():
-    st.set_page_config(page_title="📅 일정 비서 AI", page_icon="📅", layout="wide")
-    ensure_state()
-
-    st.title("📅 일정 비서 AI")
-    st.caption("LangGraph + GPT API + 규칙 기반 검증으로 만드는 일정 정리 챗봇")
-
-    with st.sidebar:
-        st.header("⚙️ 설정")
-        env_key = get_api_key_from_env_or_secrets()
-        api_key_input = st.text_input("OPENAI_API_KEY", value="", type="password", help="비워두면 환경변수/Secrets의 OPENAI_API_KEY를 사용합니다.")
-        api_key = api_key_input or env_key
-        model = st.text_input("Model", value=get_default_model())
-        st.divider()
-        st.header("📋 예시 입력")
-        for i, example in enumerate(EXAMPLES, start=1):
-            if st.button(f"예시 {i} 채우기", key=f"example_{i}"):
-                st.session_state["pending_example"] = example
-        st.divider()
-        st.markdown("""
-        **기능**
-        - 자연어 일정 파싱
-        - 일정 추가/수정 요청 반영
-        - 시간순 정렬
-        - 일정 충돌 확인
-        - 체크리스트 생성
-        """)
-        if st.button("🗑️ 대화 초기화"):
-            reset_session()
-            st.rerun()
-
-    client = make_client(api_key)
-    graph = build_graph(client, model)
-
-    if not api_key:
-        st.warning("OPENAI_API_KEY가 없어 규칙 기반 fallback으로 동작합니다. API Key를 넣으면 자연어 파싱이 더 좋아집니다.")
-
-    if "pending_example" in st.session_state:
-        example = st.session_state.pop("pending_example")
-        st.session_state.messages.append({"role": "user", "content": example})
-        result = run_schedule_assistant(example, graph)
-        st.session_state.messages.append({"role": "assistant", "content": result.get("final_message", "결과를 생성하지 못했어요.")})
-
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    prompt = st.chat_input("예: 내일 오후 2시 팀플 회의, 5시 알바 있어. 일정 정리해줘.")
-    if prompt:
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        result = run_schedule_assistant(prompt, graph)
-        answer = result.get("final_message", "결과를 생성하지 못했어요.")
-        st.session_state.messages.append({"role": "assistant", "content": answer})
-        with st.chat_message("assistant"):
-            st.markdown(answer)
-        render_result(result)
-
-
-if __name__ == "__main__":
-    main()
