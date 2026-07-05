@@ -646,6 +646,10 @@ def build_graph(client: Optional[OpenAI], model: str):
     builder.add_edge("report_generation", END)
 
     return builder.compile()
+import streamlit.components.v1 as components
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
 EXAMPLES = [
     "오늘 1시 병원, 3시 과제 제출, 6시 헬스장 일정 정리해줘.",
     "내일 오전 10시 자료구조 수업, 오후 2시 SQLD 공부, 저녁 7시 친구 약속 있어. SQLD 공부가 제일 중요해.",
@@ -667,6 +671,37 @@ CATEGORY_META = {
     "etc": "📌 기타",
 }
 
+WEATHER_CODE_META = {
+    0: ("☀️", "맑음"),
+    1: ("🌤️", "대체로 맑음"),
+    2: ("⛅", "구름 조금"),
+    3: ("☁️", "흐림"),
+    45: ("🌫️", "안개"),
+    48: ("🌫️", "서리 안개"),
+    51: ("🌦️", "약한 이슬비"),
+    53: ("🌦️", "이슬비"),
+    55: ("🌦️", "강한 이슬비"),
+    56: ("🌧️", "차가운 이슬비"),
+    57: ("🌧️", "강한 차가운 이슬비"),
+    61: ("🌧️", "약한 비"),
+    63: ("🌧️", "비"),
+    65: ("🌧️", "강한 비"),
+    66: ("🌧️", "차가운 비"),
+    67: ("🌧️", "강한 차가운 비"),
+    71: ("🌨️", "약한 눈"),
+    73: ("🌨️", "눈"),
+    75: ("❄️", "강한 눈"),
+    77: ("❄️", "싸락눈"),
+    80: ("🌦️", "약한 소나기"),
+    81: ("🌦️", "소나기"),
+    82: ("⛈️", "강한 소나기"),
+    85: ("🌨️", "약한 눈 소나기"),
+    86: ("🌨️", "강한 눈 소나기"),
+    95: ("⛈️", "뇌우"),
+    96: ("⛈️", "우박 동반 뇌우"),
+    99: ("⛈️", "강한 우박 동반 뇌우"),
+}
+
 
 def reset_session():
     for key in ["messages", "schedule_json", "last_plan", "last_trace", "feedback_history", "pending_example"]:
@@ -681,7 +716,8 @@ def ensure_state():
                 "role": "assistant",
                 "content": (
                     f"안녕하세요! 오늘은 **{today['today']} ({today['weekday']})**이에요.\n\n"
-                    "자연어로 일정을 말해주면 날짜를 계산해서 시간순으로 정리하고, 겹치는 일정도 확인해드릴게요."
+                    "자연어로 일정을 말해주면 날짜를 계산해서 시간순으로 정리하고, 겹치는 일정도 확인해드릴게요. "
+                    "상단에는 실시간 전자시계와 현재 지역 날씨도 표시돼요."
                 ),
             }
         ]
@@ -780,6 +816,66 @@ def inject_css():
             font-weight: 850;
             margin-top: 3px;
         }
+        .weather-card {
+            padding: 20px 22px;
+            border-radius: 24px;
+            background: linear-gradient(135deg, rgba(255,255,255,0.94), rgba(239,246,255,0.90));
+            border: 1px solid rgba(96, 165, 250, 0.26);
+            box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+            margin-bottom: 16px;
+        }
+        .weather-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+        }
+        .weather-title {
+            color: #0f172a;
+            font-size: 1.02rem;
+            font-weight: 850;
+        }
+        .weather-location {
+            color: #64748b;
+            font-size: 0.86rem;
+            margin-top: 4px;
+        }
+        .weather-temp {
+            color: #0f172a;
+            font-size: 2.1rem;
+            font-weight: 900;
+            letter-spacing: -0.04em;
+            text-align: right;
+        }
+        .weather-desc {
+            color: #2563eb;
+            font-size: 0.9rem;
+            font-weight: 850;
+            text-align: right;
+        }
+        .weather-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            margin-top: 14px;
+        }
+        .weather-item {
+            padding: 10px 12px;
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.80);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+        }
+        .weather-item-label {
+            color: #64748b;
+            font-size: 0.76rem;
+            font-weight: 750;
+        }
+        .weather-item-value {
+            color: #0f172a;
+            font-size: 0.98rem;
+            font-weight: 850;
+            margin-top: 3px;
+        }
         div[data-testid="stChatMessage"] {
             border-radius: 18px;
             background: rgba(255, 255, 255, 0.70);
@@ -826,6 +922,324 @@ def render_hero():
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_live_clock():
+    components.html(
+        """
+        <div class="clock-card">
+            <div class="clock-header">
+                <div>
+                    <div class="clock-label">LIVE KST DIGITAL CLOCK</div>
+                    <div id="clock-date" class="clock-date">----.--.--</div>
+                </div>
+                <div class="clock-dot"></div>
+            </div>
+            <div id="clock-time" class="clock-time">--:--:--</div>
+            <div class="clock-caption">초 단위로 실시간 갱신됩니다.</div>
+        </div>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;800&display=swap');
+            body { margin: 0; }
+            .clock-card {
+                box-sizing: border-box;
+                width: 100%;
+                min-height: 180px;
+                padding: 22px 24px;
+                border-radius: 26px;
+                background:
+                    radial-gradient(circle at 20% 20%, rgba(34,211,238,0.25), transparent 32%),
+                    linear-gradient(135deg, #020617 0%, #111827 52%, #1e1b4b 100%);
+                color: #e0f2fe;
+                border: 1px solid rgba(125, 211, 252, 0.22);
+                box-shadow: 0 18px 45px rgba(15, 23, 42, 0.26);
+                overflow: hidden;
+                position: relative;
+            }
+            .clock-card:before {
+                content: "";
+                position: absolute;
+                inset: 0;
+                background-image: linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px);
+                background-size: 100% 9px;
+                pointer-events: none;
+            }
+            .clock-header {
+                position: relative;
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                z-index: 1;
+            }
+            .clock-label {
+                font-family: Arial, sans-serif;
+                font-size: 12px;
+                font-weight: 800;
+                letter-spacing: 0.16em;
+                color: rgba(186, 230, 253, 0.72);
+            }
+            .clock-date {
+                margin-top: 6px;
+                font-family: Arial, sans-serif;
+                font-size: 15px;
+                font-weight: 700;
+                color: rgba(224, 242, 254, 0.86);
+            }
+            .clock-dot {
+                width: 12px;
+                height: 12px;
+                border-radius: 50%;
+                background: #22c55e;
+                box-shadow: 0 0 18px #22c55e;
+                animation: pulse 1s infinite;
+            }
+            .clock-time {
+                position: relative;
+                z-index: 1;
+                margin-top: 14px;
+                font-family: 'Orbitron', 'Courier New', monospace;
+                font-size: clamp(42px, 10vw, 82px);
+                font-weight: 800;
+                letter-spacing: 0.06em;
+                color: #67e8f9;
+                text-shadow: 0 0 12px rgba(103, 232, 249, 0.95), 0 0 30px rgba(59, 130, 246, 0.50);
+                line-height: 1;
+            }
+            .clock-caption {
+                position: relative;
+                z-index: 1;
+                margin-top: 12px;
+                font-family: Arial, sans-serif;
+                font-size: 13px;
+                color: rgba(224, 242, 254, 0.68);
+            }
+            @keyframes pulse {
+                0%, 100% { opacity: 0.45; transform: scale(0.86); }
+                50% { opacity: 1; transform: scale(1.08); }
+            }
+        </style>
+        <script>
+            function updateClock() {
+                const now = new Date();
+                const dateFormatter = new Intl.DateTimeFormat('ko-KR', {
+                    timeZone: 'Asia/Seoul',
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    weekday: 'long'
+                });
+                const timeFormatter = new Intl.DateTimeFormat('ko-KR', {
+                    timeZone: 'Asia/Seoul',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: false
+                });
+                document.getElementById('clock-date').textContent = dateFormatter.format(now);
+                document.getElementById('clock-time').textContent = timeFormatter.format(now);
+            }
+            updateClock();
+            setInterval(updateClock, 1000);
+        </script>
+        """,
+        height=196,
+    )
+
+
+def _fetch_json(url: str, params: Dict[str, Any], timeout: int = 7) -> Dict[str, Any]:
+    query = urlencode(params, doseq=True)
+    request = Request(f"{url}?{query}", headers={"User-Agent": "schedule-assistant-streamlit/1.0"})
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_current_weather(latitude: float, longitude: float) -> Dict[str, Any]:
+    return _fetch_json(
+        "https://api.open-meteo.com/v1/forecast",
+        {
+            "latitude": round(float(latitude), 4),
+            "longitude": round(float(longitude), 4),
+            "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation",
+            "timezone": "auto",
+        },
+    )
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def geocode_city_name(city_name: str) -> Optional[Dict[str, Any]]:
+    city_name = (city_name or "").strip()
+    if not city_name:
+        return None
+    data = _fetch_json(
+        "https://geocoding-api.open-meteo.com/v1/search",
+        {"name": city_name, "count": 1, "language": "ko", "format": "json"},
+    )
+    results = data.get("results") or []
+    if not results:
+        return None
+    item = results[0]
+    parts = [item.get("name"), item.get("admin1"), item.get("country")]
+    label = ", ".join(str(p) for p in parts if p)
+    return {
+        "latitude": item.get("latitude"),
+        "longitude": item.get("longitude"),
+        "label": label or city_name,
+    }
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def reverse_geocode_coords(latitude: float, longitude: float) -> str:
+    try:
+        data = _fetch_json(
+            "https://geocoding-api.open-meteo.com/v1/reverse",
+            {
+                "latitude": round(float(latitude), 4),
+                "longitude": round(float(longitude), 4),
+                "count": 1,
+                "language": "ko",
+                "format": "json",
+            },
+        )
+        results = data.get("results") or []
+        if results:
+            item = results[0]
+            parts = [item.get("name"), item.get("admin1"), item.get("country")]
+            return ", ".join(str(p) for p in parts if p) or "현재 위치"
+    except Exception:
+        pass
+    return "현재 위치"
+
+
+def get_browser_location() -> Optional[Dict[str, Any]]:
+    try:
+        from streamlit_geolocation import streamlit_geolocation
+    except Exception:
+        return None
+
+    try:
+        return streamlit_geolocation()
+    except Exception:
+        return None
+
+
+def weather_code_to_meta(code: Any):
+    try:
+        return WEATHER_CODE_META.get(int(code), ("🌡️", "날씨 정보"))
+    except Exception:
+        return ("🌡️", "날씨 정보")
+
+
+def render_weather_card(weather: Dict[str, Any], location_label: str):
+    current = weather.get("current") or {}
+    units = weather.get("current_units") or {}
+    emoji, description = weather_code_to_meta(current.get("weather_code"))
+
+    temp = current.get("temperature_2m")
+    feels_like = current.get("apparent_temperature")
+    humidity = current.get("relative_humidity_2m")
+    wind = current.get("wind_speed_10m")
+    rain = current.get("precipitation")
+    observed_time = current.get("time") or "-"
+
+    temp_unit = units.get("temperature_2m", "°C")
+    feels_unit = units.get("apparent_temperature", "°C")
+    humidity_unit = units.get("relative_humidity_2m", "%")
+    wind_unit = units.get("wind_speed_10m", "km/h")
+    rain_unit = units.get("precipitation", "mm")
+
+    st.markdown(
+        f"""
+        <div class="weather-card">
+            <div class="weather-top">
+                <div>
+                    <div class="weather-title">🌦️ 현재 지역 날씨</div>
+                    <div class="weather-location">📍 {safe_text(location_label)} · 관측 {safe_text(observed_time)}</div>
+                </div>
+                <div>
+                    <div class="weather-temp">{safe_text(temp)}{safe_text(temp_unit)}</div>
+                    <div class="weather-desc">{emoji} {safe_text(description)}</div>
+                </div>
+            </div>
+            <div class="weather-grid">
+                <div class="weather-item">
+                    <div class="weather-item-label">체감</div>
+                    <div class="weather-item-value">{safe_text(feels_like)}{safe_text(feels_unit)}</div>
+                </div>
+                <div class="weather-item">
+                    <div class="weather-item-label">습도</div>
+                    <div class="weather-item-value">{safe_text(humidity)}{safe_text(humidity_unit)}</div>
+                </div>
+                <div class="weather-item">
+                    <div class="weather-item-label">바람</div>
+                    <div class="weather-item-value">{safe_text(wind)} {safe_text(wind_unit)}</div>
+                </div>
+                <div class="weather-item">
+                    <div class="weather-item-label">강수량</div>
+                    <div class="weather-item-value">{safe_text(rain)}{safe_text(rain_unit)}</div>
+                </div>
+                <div class="weather-item">
+                    <div class="weather-item-label">기준</div>
+                    <div class="weather-item-value">Open-Meteo</div>
+                </div>
+                <div class="weather-item">
+                    <div class="weather-item-label">갱신</div>
+                    <div class="weather-item-value">10분 캐시</div>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_weather_panel():
+    st.markdown("#### 🌦️ 현재 지역 날씨")
+    st.caption("브라우저 위치 권한을 허용하면 현재 위치 기준으로 표시됩니다. 권한이 안 뜨면 지역명을 직접 입력하세요.")
+
+    manual_city = st.text_input(
+        "날씨 지역 직접 입력",
+        value="",
+        placeholder="예: 안성, 서울, 수원",
+        label_visibility="collapsed",
+    )
+
+    latitude = longitude = None
+    location_label = "현재 위치"
+
+    if manual_city.strip():
+        try:
+            place = geocode_city_name(manual_city)
+        except Exception as exc:
+            st.warning(f"지역 검색 중 오류가 발생했어요: {exc}")
+            place = None
+        if not place:
+            st.info("해당 지역을 찾지 못했어요. 예: 안성, 서울, 수원처럼 입력해보세요.")
+            return
+        latitude = place.get("latitude")
+        longitude = place.get("longitude")
+        location_label = place.get("label") or manual_city
+    else:
+        location = get_browser_location()
+        if location and location.get("latitude") is not None and location.get("longitude") is not None:
+            latitude = location.get("latitude")
+            longitude = location.get("longitude")
+            location_label = reverse_geocode_coords(float(latitude), float(longitude))
+        else:
+            st.info("현재 위치 날씨를 보려면 위치 권한을 허용하거나 위 입력창에 지역명을 입력하세요.")
+            return
+
+    try:
+        weather = fetch_current_weather(float(latitude), float(longitude))
+        render_weather_card(weather, location_label)
+    except Exception as exc:
+        st.warning(f"날씨 정보를 불러오지 못했어요. 인터넷 연결이나 지역명을 확인해 주세요. ({exc})")
+
+
+def render_realtime_widgets():
+    render_live_clock()
+    render_weather_panel()
+    st.divider()
 
 
 def render_stat_cards(plan: Dict[str, Any], errors: List[str]):
@@ -936,6 +1350,7 @@ def main():
     inject_css()
     ensure_state()
     render_hero()
+    render_realtime_widgets()
 
     with st.sidebar:
         st.header("⚙️ 설정")
@@ -960,6 +1375,9 @@ def main():
         st.markdown(
             """
             **지원 기능**
+            - 전자시계 실시간 표시
+            - 현재 위치 날씨 표시
+            - 지역명 직접 입력 날씨 조회
             - 오늘/내일/모레 날짜 자동 계산
             - 요일 기반 날짜 계산
             - 자연어 일정 파싱
