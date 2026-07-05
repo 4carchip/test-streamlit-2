@@ -1066,17 +1066,125 @@ def fetch_current_weather(latitude: float, longitude: float) -> Dict[str, Any]:
     )
 
 
-KNOWN_KOREAN_LOCATIONS = {
-    # Open-Meteo 지오코딩에서 "안성"이 북한 강원도 지역으로 먼저 잡히는 경우를 막기 위한 고정 후보입니다.
-    "안성": {"latitude": 37.0079, "longitude": 127.2797, "label": "안성시, 경기도, 대한민국"},
-    "안성시": {"latitude": 37.0079, "longitude": 127.2797, "label": "안성시, 경기도, 대한민국"},
-    "한경대": {"latitude": 37.0116, "longitude": 127.2645, "label": "한경국립대학교 안성캠퍼스, 경기도, 대한민국"},
-    "한경국립대": {"latitude": 37.0116, "longitude": 127.2645, "label": "한경국립대학교 안성캠퍼스, 경기도, 대한민국"},
-}
+KOREAN_LOCATION_PRESETS = [
+    # name, latitude, longitude, label, aliases
+    ("안성", 37.0079, 127.2797, "안성시, 경기도, 대한민국", ["안성시", "경기안성", "경기도안성", "경기도안성시"]),
+    ("한경대", 37.0116, 127.2645, "한경국립대학교 안성캠퍼스, 경기도, 대한민국", ["한경국립대", "한경국립대학교", "한경대학교", "한경국립대학교안성", "한경대안성"]),
+
+    # 특별시/광역시/특별자치시/특별자치도
+    ("서울", 37.5665, 126.9780, "서울특별시, 대한민국", ["서울시", "서울특별시", "seoul"]),
+    ("인천", 37.4563, 126.7052, "인천광역시, 대한민국", ["인천시", "인천광역시", "incheon"]),
+    ("부산", 35.1796, 129.0756, "부산광역시, 대한민국", ["부산시", "부산광역시", "busan"]),
+    ("대구", 35.8714, 128.6014, "대구광역시, 대한민국", ["대구시", "대구광역시", "daegu"]),
+    ("대전", 36.3504, 127.3845, "대전광역시, 대한민국", ["대전시", "대전광역시", "daejeon"]),
+    ("광주", 35.1595, 126.8526, "광주광역시, 대한민국", ["광주광역시", "gwangju"]),
+    ("울산", 35.5384, 129.3114, "울산광역시, 대한민국", ["울산시", "울산광역시", "ulsan"]),
+    ("세종", 36.4800, 127.2890, "세종특별자치시, 대한민국", ["세종시", "세종특별자치시", "sejong"]),
+    ("제주", 33.4996, 126.5312, "제주시, 제주특별자치도, 대한민국", ["제주시", "제주도", "제주특별자치도", "jeju"]),
+
+    # 경기도 주요 지역
+    ("수원", 37.2636, 127.0286, "수원시, 경기도, 대한민국", ["수원시", "경기수원", "경기도수원", "경기도수원시", "suwon"]),
+    ("성남", 37.4200, 127.1265, "성남시, 경기도, 대한민국", ["성남시", "분당", "분당구", "판교", "경기도성남", "경기도성남시"]),
+    ("용인", 37.2411, 127.1776, "용인시, 경기도, 대한민국", ["용인시", "경기도용인", "경기도용인시"]),
+    ("고양", 37.6584, 126.8320, "고양시, 경기도, 대한민국", ["고양시", "일산", "경기도고양", "경기도고양시"]),
+    ("부천", 37.5034, 126.7660, "부천시, 경기도, 대한민국", ["부천시", "경기도부천", "경기도부천시"]),
+    ("화성", 37.1995, 126.8312, "화성시, 경기도, 대한민국", ["화성시", "동탄", "경기도화성", "경기도화성시"]),
+    ("안산", 37.3219, 126.8309, "안산시, 경기도, 대한민국", ["안산시", "경기도안산", "경기도안산시"]),
+    ("평택", 36.9921, 127.1128, "평택시, 경기도, 대한민국", ["평택시", "경기도평택", "경기도평택시"]),
+    ("안양", 37.3943, 126.9568, "안양시, 경기도, 대한민국", ["안양시", "경기도안양", "경기도안양시"]),
+    ("남양주", 37.6360, 127.2165, "남양주시, 경기도, 대한민국", ["남양주시", "경기도남양주", "경기도남양주시"]),
+    ("의정부", 37.7381, 127.0337, "의정부시, 경기도, 대한민국", ["의정부시", "경기도의정부", "경기도의정부시"]),
+    ("파주", 37.7599, 126.7799, "파주시, 경기도, 대한민국", ["파주시", "경기도파주", "경기도파주시"]),
+    ("김포", 37.6154, 126.7156, "김포시, 경기도, 대한민국", ["김포시", "경기도김포", "경기도김포시"]),
+    ("광명", 37.4786, 126.8646, "광명시, 경기도, 대한민국", ["광명시", "경기도광명", "경기도광명시"]),
+    ("군포", 37.3617, 126.9352, "군포시, 경기도, 대한민국", ["군포시", "경기도군포", "경기도군포시"]),
+    ("하남", 37.5393, 127.2149, "하남시, 경기도, 대한민국", ["하남시", "경기도하남", "경기도하남시"]),
+    ("오산", 37.1498, 127.0772, "오산시, 경기도, 대한민국", ["오산시", "경기도오산", "경기도오산시"]),
+    ("이천", 37.2720, 127.4350, "이천시, 경기도, 대한민국", ["이천시", "경기도이천", "경기도이천시"]),
+    ("여주", 37.2980, 127.6370, "여주시, 경기도, 대한민국", ["여주시", "경기도여주", "경기도여주시"]),
+    ("경기광주", 37.4294, 127.2550, "광주시, 경기도, 대한민국", ["경기도광주", "경기도광주시", "광주시경기", "광주시경기도"]),
+
+    # 강원/충청/전라/경상 주요 지역
+    ("춘천", 37.8813, 127.7298, "춘천시, 강원특별자치도, 대한민국", ["춘천시", "강원춘천", "강원도춘천"]),
+    ("강릉", 37.7519, 128.8761, "강릉시, 강원특별자치도, 대한민국", ["강릉시", "강원강릉", "강원도강릉"]),
+    ("원주", 37.3422, 127.9202, "원주시, 강원특별자치도, 대한민국", ["원주시", "강원원주", "강원도원주"]),
+    ("청주", 36.6424, 127.4890, "청주시, 충청북도, 대한민국", ["청주시", "충북청주", "충청북도청주"]),
+    ("천안", 36.8151, 127.1139, "천안시, 충청남도, 대한민국", ["천안시", "충남천안", "충청남도천안"]),
+    ("아산", 36.7898, 127.0025, "아산시, 충청남도, 대한민국", ["아산시", "충남아산", "충청남도아산"]),
+    ("전주", 35.8242, 127.1480, "전주시, 전라북도, 대한민국", ["전주시", "전북전주", "전라북도전주"]),
+    ("군산", 35.9677, 126.7366, "군산시, 전라북도, 대한민국", ["군산시", "전북군산", "전라북도군산"]),
+    ("목포", 34.8118, 126.3922, "목포시, 전라남도, 대한민국", ["목포시", "전남목포", "전라남도목포"]),
+    ("여수", 34.7604, 127.6622, "여수시, 전라남도, 대한민국", ["여수시", "전남여수", "전라남도여수"]),
+    ("순천", 34.9506, 127.4872, "순천시, 전라남도, 대한민국", ["순천시", "전남순천", "전라남도순천"]),
+    ("포항", 36.0190, 129.3435, "포항시, 경상북도, 대한민국", ["포항시", "경북포항", "경상북도포항"]),
+    ("경주", 35.8562, 129.2247, "경주시, 경상북도, 대한민국", ["경주시", "경북경주", "경상북도경주"]),
+    ("구미", 36.1195, 128.3446, "구미시, 경상북도, 대한민국", ["구미시", "경북구미", "경상북도구미"]),
+    ("창원", 35.2286, 128.6811, "창원시, 경상남도, 대한민국", ["창원시", "경남창원", "경상남도창원"]),
+    ("김해", 35.2285, 128.8893, "김해시, 경상남도, 대한민국", ["김해시", "경남김해", "경상남도김해"]),
+    ("진주", 35.1800, 128.1076, "진주시, 경상남도, 대한민국", ["진주시", "경남진주", "경상남도진주"]),
+]
+
+
+LOCATION_NAME_CHOICES = [
+    "안성", "서울", "인천", "수원", "부산", "대구", "대전", "광주", "울산", "세종", "제주",
+    "성남", "용인", "고양", "부천", "화성", "안산", "평택", "안양", "천안", "청주", "전주", "창원",
+]
 
 
 def normalize_place_query(city_name: str) -> str:
-    return re.sub(r"\s+", "", (city_name or "").strip())
+    return re.sub(r"\s+", "", (city_name or "").strip()).lower()
+
+
+def clean_place_query(city_name: str) -> str:
+    text = normalize_place_query(city_name)
+    # 사용자가 입력창에 "서울 날씨", "수원 현재 날씨"처럼 적어도 지역명만 남깁니다.
+    remove_words = [
+        "대한민국", "한국", "남한", "현재위치", "현재", "오늘", "내일", "날씨", "기온", "온도",
+        "시청", "근처", "주변", "부근", "지역", ",", ".", "·", "-", "_",
+    ]
+    for word in remove_words:
+        text = text.replace(word, "")
+    text = re.sub(r"(은|는|이|가|에서|으로|로)$", "", text)
+    return text
+
+
+def make_location(latitude: float, longitude: float, label: str) -> Dict[str, Any]:
+    return {"latitude": latitude, "longitude": longitude, "label": label}
+
+
+def build_known_location_map() -> Dict[str, Dict[str, Any]]:
+    mapping: Dict[str, Dict[str, Any]] = {}
+    for name, lat, lon, label, aliases in KOREAN_LOCATION_PRESETS:
+        value = make_location(lat, lon, label)
+        keys = {name, *aliases}
+        for key in keys:
+            compact = clean_place_query(key)
+            if compact:
+                mapping[compact] = value
+    return mapping
+
+
+KNOWN_KOREAN_LOCATIONS = build_known_location_map()
+
+
+def find_known_korean_location(city_name: str) -> Optional[Dict[str, Any]]:
+    compact_query = clean_place_query(city_name)
+    if not compact_query:
+        return None
+
+    # 1) 정확히 매칭되는 지역은 무조건 내부 좌표를 사용합니다.
+    if compact_query in KNOWN_KOREAN_LOCATIONS:
+        return dict(KNOWN_KOREAN_LOCATIONS[compact_query])
+
+    # 2) "경기도 수원시", "서울특별시 강남"처럼 상위 지역명이 같이 들어오면 가장 구체적인 후보를 고릅니다.
+    matches = []
+    for key, value in KNOWN_KOREAN_LOCATIONS.items():
+        if len(key) >= 2 and (key in compact_query or compact_query in key):
+            matches.append((len(key), value))
+    if matches:
+        matches.sort(key=lambda item: item[0], reverse=True)
+        return dict(matches[0][1])
+    return None
 
 
 def has_hangul(text: str) -> bool:
@@ -1101,28 +1209,32 @@ def score_geocode_result(item: Dict[str, Any], query: str) -> int:
 
     score = 0
     if is_south_korea_place(item):
-        score += 1000
+        score += 10000
     else:
-        score -= 1000
+        score -= 10000
     if country_code == "KP":
-        score -= 2000
+        score -= 20000
 
-    compact_name = normalize_place_query(name)
-    compact_admin = normalize_place_query(admin1)
-    compact_query = normalize_place_query(query)
+    compact_name = clean_place_query(name)
+    compact_admin = clean_place_query(admin1)
+    compact_query = clean_place_query(query)
 
     if compact_query and compact_query == compact_name:
-        score += 180
+        score += 1000
     elif compact_query and (compact_query in compact_name or compact_name in compact_query):
-        score += 90
+        score += 350
 
-    if "안성" in compact_query and ("경기도" in compact_admin or "Gyeonggi" in admin1):
-        score += 300
-    if "강원" in compact_admin and "안성" in compact_query:
-        score -= 300
+    if compact_query in KNOWN_KOREAN_LOCATIONS:
+        preset_label = KNOWN_KOREAN_LOCATIONS[compact_query]["label"]
+        if compact_name and compact_name in clean_place_query(preset_label):
+            score += 500
 
+    # 짧은 지명은 동/리/면 후보로 튀는 경우가 많아서 인구가 있는 시/광역시 후보를 더 선호합니다.
+    feature_code = str(item.get("feature_code") or "")
+    if feature_code.startswith("PPL"):
+        score += 100
     try:
-        score += min(int(item.get("population") or 0) // 10000, 50)
+        score += min(int(item.get("population") or 0) // 10000, 300)
     except Exception:
         pass
     return score
@@ -1134,31 +1246,45 @@ def geocode_city_name(city_name: str) -> Optional[Dict[str, Any]]:
     if not city_name:
         return None
 
-    compact_query = normalize_place_query(city_name)
+    # 국내 실습용 앱에서는 한국 주요 지역을 내부 좌표 사전으로 먼저 처리합니다.
+    # 이렇게 해야 "서울", "인천", "수원"처럼 짧은 지명이 전남/전북/북한의 동명 지명으로 튀지 않습니다.
+    known = find_known_korean_location(city_name)
+    if known:
+        return known
 
-    # 국내 실습용 앱이라 자주 쓰는 지역은 직접 좌표를 우선 사용합니다.
-    # 특히 "안성"은 북한 강원도 후보와 이름이 겹쳐서 API 첫 결과만 쓰면 오동작할 수 있습니다.
-    if compact_query in KNOWN_KOREAN_LOCATIONS:
-        return dict(KNOWN_KOREAN_LOCATIONS[compact_query])
-    if "안성" in compact_query and not any(word in compact_query for word in ["강원", "북한", "조선민주주의"]):
-        return dict(KNOWN_KOREAN_LOCATIONS["안성"])
+    query_variants = []
+    compact_query = clean_place_query(city_name)
+    for query in [city_name, compact_query, f"{compact_query} 대한민국", f"{compact_query} South Korea"]:
+        query = (query or "").strip()
+        if query and query not in query_variants:
+            query_variants.append(query)
 
-    data = _fetch_json(
-        "https://geocoding-api.open-meteo.com/v1/search",
-        {"name": city_name, "count": 20, "language": "ko", "format": "json"},
-    )
-    results = data.get("results") or []
-    if not results:
+    all_results: List[Dict[str, Any]] = []
+    for query in query_variants:
+        try:
+            data = _fetch_json(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                {"name": query, "count": 50, "language": "ko", "format": "json"},
+            )
+            all_results.extend(data.get("results") or [])
+        except Exception:
+            continue
+
+    if not all_results:
         return None
 
-    korea_results = [item for item in results if is_south_korea_place(item)]
-
-    # 한글로 국내 지역명을 입력했는데 대한민국 후보가 없으면, 북한/외국 후보를 억지로 보여주지 않습니다.
+    # 한국어 입력은 대한민국 결과가 있을 때만 사용합니다. 북한/외국/타 지역 동명 후보는 보여주지 않습니다.
+    korea_results = [item for item in all_results if is_south_korea_place(item)]
     if has_hangul(city_name) and not korea_results:
         return None
 
-    candidates = korea_results or results
+    candidates = korea_results or all_results
     item = max(candidates, key=lambda result: score_geocode_result(result, city_name))
+
+    # 마지막 안전장치: 한글 입력인데 대한민국 후보가 아니면 오답 표시 대신 검색 실패로 처리합니다.
+    if has_hangul(city_name) and not is_south_korea_place(item):
+        return None
+
     label = format_place_label(item, city_name)
     return {
         "latitude": item.get("latitude"),
@@ -1274,30 +1400,37 @@ def render_weather_card(weather: Dict[str, Any], location_label: str):
 
 def render_weather_panel():
     st.markdown("#### 🌦️ 현재 지역 날씨")
-    st.caption("브라우저 위치 권한을 허용하면 현재 위치 기준으로 표시됩니다. 권한이 안 뜨면 지역명을 직접 입력하세요. 한국 지역명은 대한민국 후보를 우선 선택합니다.")
+    st.caption("브라우저 위치 권한을 허용하면 현재 위치 기준으로 표시됩니다. 직접 입력은 한국 주요 지역 좌표 사전을 먼저 사용해서 동명 지명 오작동을 막습니다.")
 
+    quick_city = st.selectbox(
+        "빠른 지역 선택",
+        ["직접 입력/현재 위치"] + LOCATION_NAME_CHOICES,
+        index=0,
+        help="서울·인천·수원처럼 API에서 동명이 많은 지역은 이 목록/내부 좌표를 우선 사용합니다.",
+    )
     manual_city = st.text_input(
         "날씨 지역 직접 입력",
         value="",
-        placeholder="예: 안성, 서울, 수원, 한경대",
+        placeholder="예: 안성, 서울, 인천, 수원, 한경대",
         label_visibility="collapsed",
     )
 
     latitude = longitude = None
     location_label = "현재 위치"
+    city_query = manual_city.strip() or ("" if quick_city == "직접 입력/현재 위치" else quick_city)
 
-    if manual_city.strip():
+    if city_query:
         try:
-            place = geocode_city_name(manual_city)
+            place = geocode_city_name(city_query)
         except Exception as exc:
             st.warning(f"지역 검색 중 오류가 발생했어요: {exc}")
             place = None
         if not place:
-            st.info("해당 지역을 찾지 못했어요. 예: 안성, 서울, 수원, 한경대처럼 입력해보세요.")
+            st.info("해당 지역을 정확히 찾지 못했어요. 예: 안성, 서울, 인천, 수원, 한경대처럼 입력하거나 빠른 지역 선택을 사용해보세요.")
             return
         latitude = place.get("latitude")
         longitude = place.get("longitude")
-        location_label = place.get("label") or manual_city
+        location_label = place.get("label") or city_query
     else:
         location = get_browser_location()
         if location and location.get("latitude") is not None and location.get("longitude") is not None:
