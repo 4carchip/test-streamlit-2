@@ -39,6 +39,7 @@ PARSE_SYSTEM_PROMPT = """
    - '내일'은 기준 날짜에 하루를 더한 날짜다.
    - '모레'는 기준 날짜에 이틀을 더한 날짜다.
    - 요일 표현은 기준 날짜 이후에 가장 가까운 해당 요일로 계산한다.
+8. 종료 시간이 없으면 null로 두되, '2시부터 4시까지'처럼 범위가 있으면 end_time을 반드시 채운다.
 
 반환 JSON 스키마:
 {
@@ -67,11 +68,12 @@ FEEDBACK_SYSTEM_PROMPT = """
 
 규칙:
 1. 기존 일정 중 삭제/변경 요청이 있으면 반영한다.
-2. 추가 일정이 있으면 events 배열에 추가한다.
-3. 애매한 내용은 notes에 남기고 날짜나 시간은 null로 둔다.
-4. 새로 계산하거나 없는 일정을 상상해서 추가하지 않는다.
-5. 반환 형식은 기존 JSON과 같은 스키마를 유지한다.
-6. 사용자 입력 앞에 제공되는 기준 날짜 정보를 반드시 따른다. 오늘/내일/모레/요일 표현은 기준 날짜 기준으로 계산한다.
+2. 추가 일정이 있으면 기존 events 배열을 유지한 상태에서 새 일정만 events 배열에 추가한다.
+3. 사용자가 단순히 새 약속을 말하면 기존 일정을 지우지 말고 추가 일정으로 처리한다.
+4. 애매한 내용은 notes에 남기고 날짜나 시간은 null로 둔다.
+5. 새로 계산하거나 없는 일정을 상상해서 추가하지 않는다.
+6. 반환 형식은 기존 JSON과 같은 스키마를 유지한다.
+7. 사용자 입력 앞에 제공되는 기준 날짜 정보를 반드시 따른다. 오늘/내일/모레/요일 표현은 기준 날짜 기준으로 계산한다.
 """.strip()
 
 REPORT_SYSTEM_PROMPT = """
@@ -93,6 +95,7 @@ class ScheduleState(TypedDict, total=False):
     mode: Literal["initial", "feedback"]
     schedule_json: Dict[str, Any]
     validation_errors: List[str]
+    conflict_pairs: List[Dict[str, Any]]
     schedule_error: str
     plan_result: Dict[str, Any]
     final_message: str
@@ -298,11 +301,14 @@ def _time_matches(text: str):
     return list(pattern.finditer(text))
 
 
-def normalize_time_from_match(match: re.Match) -> Optional[str]:
-    meridiem = match.group(1) or ""
+def normalize_time_from_match(match: re.Match, default_meridiem: str = "") -> Optional[str]:
+    meridiem = match.group(1) or default_meridiem or ""
     hour = int(match.group(2))
     minute = int(match.group(3) or 0)
     if meridiem in ["오후", "저녁", "밤"] and hour < 12:
+        hour += 12
+    elif not meridiem and 1 <= hour <= 7:
+        # 한국어 일정 입력에서 "1시/3시/6시"처럼 오전·오후가 빠진 표현은 보통 오후 약속인 경우가 많아 오후로 보정합니다.
         hour += 12
     if meridiem in ["오전", "새벽"] and hour == 12:
         hour = 0
@@ -360,8 +366,14 @@ def fallback_parse_schedule(raw_input: str) -> Dict[str, Any]:
     for chunk in chunks:
         date_value = normalize_date(chunk) or inherited_date
         matches = _time_matches(chunk)
-        start_time = normalize_time_from_match(matches[0]) if matches else None
-        end_time = normalize_time_from_match(matches[1]) if len(matches) >= 2 else None
+        start_time = None
+        end_time = None
+        if matches:
+            start_time = normalize_time_from_match(matches[0])
+            # "오후 2시부터 4시까지"처럼 뒤쪽 시간에 오전/오후가 없으면 앞쪽 표현을 상속합니다.
+            first_meridiem = matches[0].group(1) or ""
+            if len(matches) >= 2:
+                end_time = normalize_time_from_match(matches[1], default_meridiem=first_meridiem)
         event = {
             "title": clean_title(chunk),
             "date": date_value,
@@ -419,10 +431,39 @@ def end_datetime(event: Dict[str, Any]) -> Optional[datetime]:
     end_time = event.get("end_time")
     if end_time:
         try:
-            return datetime.strptime(f"{event.get('date')} {end_time}", "%Y-%m-%d %H:%M")
+            end = datetime.strptime(f"{event.get('date')} {end_time}", "%Y-%m-%d %H:%M")
+            if end <= start:
+                end += timedelta(days=1)
+            return end
         except Exception:
             pass
+    # 종료 시간이 없으면 기본 1시간 일정으로 보고 충돌 여부를 판단합니다.
     return start + timedelta(hours=1)
+
+
+def event_key(event: Dict[str, Any]) -> str:
+    return "|".join(
+        str(event.get(key) or "")
+        for key in ["date", "start_time", "end_time", "title"]
+    )
+
+
+def event_time_range_text(event: Dict[str, Any]) -> str:
+    start = event.get("start_time") or "시간 미정"
+    end = event.get("end_time")
+    return f"{start}~{end}" if end else start
+
+
+def events_overlap(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    if a.get("date") != b.get("date"):
+        return False
+    a_start = parse_datetime(a)
+    b_start = parse_datetime(b)
+    a_end = end_datetime(a)
+    b_end = end_datetime(b)
+    if not all([a_start, b_start, a_end, b_end]):
+        return False
+    return a_start < b_end and b_start < a_end
 
 
 def format_event_line(event: Dict[str, Any]) -> str:
@@ -442,8 +483,18 @@ def format_event_line(event: Dict[str, Any]) -> str:
 def detect_mode_node(state: ScheduleState) -> Dict[str, Any]:
     raw = state.get("raw_input", "")
     has_existing = bool(state.get("schedule_json", {}).get("events"))
-    feedback_words = ["수정", "변경", "바꿔", "옮겨", "추가", "삭제", "빼", "취소", "다시"]
-    mode: Literal["initial", "feedback"] = "feedback" if has_existing and any(w in raw for w in feedback_words) else "initial"
+    edit_words = ["수정", "변경", "바꿔", "옮겨", "삭제", "빼", "취소", "다시"]
+    add_words = ["추가", "또", "그리고", "하나 더", "새로", "같이", "있어", "약속", "일정"]
+    schedule_signals = ["오늘", "내일", "모레", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일", "시", ":"]
+    looks_like_schedule = bool(_time_matches(raw)) or normalize_date(raw) is not None or any(w in raw for w in schedule_signals)
+
+    # 기존 메모 일정이 있으면, 사용자가 이후에 새 약속을 말했을 때 전체 교체가 아니라 추가/수정 흐름으로 보냅니다.
+    should_feedback = has_existing and (
+        looks_like_schedule
+        or any(w in raw for w in edit_words)
+        or any(w in raw for w in add_words)
+    )
+    mode: Literal["initial", "feedback"] = "feedback" if should_feedback else "initial"
     return {"mode": mode, "trace": [f"detect_mode:{mode}"]}
 
 
@@ -483,12 +534,18 @@ def feedback_parsing_node_factory(client: Optional[OpenAI], model: str):
             parsed = normalize_schedule_dates(parsed, raw)
             trace = "feedback_parsing:llm"
         except Exception:
-            # fallback에서는 삭제/변경까지 완벽히 처리하기 어렵기 때문에 새 일정은 추가하고, 수정 문장은 기록합니다.
+            # fallback에서는 삭제/변경까지 완벽히 처리하기 어렵기 때문에, 새 일정으로 보이는 입력은 기존 메모에 추가합니다.
             parsed = previous
             additional = fallback_parse_schedule(raw).get("events", [])
             additional = normalize_schedule_dates({"events": additional, "preferences": {}}, raw).get("events", [])
-            if any(w in raw for w in ["추가", "또", "그리고"]):
+            edit_only_words = ["수정", "변경", "바꿔", "옮겨", "삭제", "빼", "취소"]
+            add_words = ["추가", "또", "그리고", "하나 더", "새로", "같이", "있어", "약속", "일정"]
+            has_real_additional = any(e.get("date") or e.get("start_time") or e.get("title") != "제목 미정 일정" for e in additional)
+            should_add = has_real_additional and (any(w in raw for w in add_words) or not any(w in raw for w in edit_only_words))
+            if should_add:
                 parsed["events"].extend(additional)
+            else:
+                parsed.setdefault("preferences", {}).setdefault("memo", "수정 요청을 정확히 해석하지 못해 기존 일정을 유지했어요.")
             parsed.setdefault("preferences", {"buffer_minutes": 30, "sort_basis": "time"})
             trace = "feedback_parsing:fallback"
         history = state.get("feedback_history", []) + [raw]
@@ -501,7 +558,7 @@ def schedule_check_node(state: ScheduleState) -> Dict[str, Any]:
     schedule = ensure_schedule_schema(state.get("schedule_json", {}))
     events = schedule.get("events", [])
     messages: List[str] = []
-    conflicts: List[str] = []
+    conflict_pairs: List[Dict[str, Any]] = []
 
     if not events:
         return {"schedule_error": "일정 내용을 찾지 못했어요. 예: '내일 오후 2시 데이터분석 과제 제출'처럼 입력해 주세요.", "trace": ["schedule_check:error"]}
@@ -512,16 +569,34 @@ def schedule_check_node(state: ScheduleState) -> Dict[str, Any]:
         if not event.get("start_time"):
             messages.append(f"'{event.get('title')}' 일정의 시작 시간이 명확하지 않아요.")
 
-    dated_events = [e for e in events if parse_datetime(e) is not None]
-    dated_events.sort(key=lambda e: parse_datetime(e) or datetime.max)
-    for prev, cur in zip(dated_events, dated_events[1:]):
-        prev_end = end_datetime(prev)
-        cur_start = parse_datetime(cur)
-        if prev_end and cur_start and prev.get("date") == cur.get("date") and cur_start < prev_end:
-            conflicts.append(f"'{prev.get('title')}' 일정과 '{cur.get('title')}' 일정 시간이 겹칠 수 있어요.")
+    comparable_events = [e for e in events if parse_datetime(e) is not None and end_datetime(e) is not None]
+    comparable_events.sort(key=lambda e: parse_datetime(e) or datetime.max)
+    for i, first in enumerate(comparable_events):
+        for second in comparable_events[i + 1 :]:
+            # 날짜가 달라지면 뒤쪽도 모두 다른 날짜라 바로 넘어갑니다.
+            if first.get("date") != second.get("date"):
+                continue
+            if events_overlap(first, second):
+                conflict_pairs.append(
+                    {
+                        "date": first.get("date"),
+                        "a_title": first.get("title"),
+                        "a_time": event_time_range_text(first),
+                        "a_key": event_key(first),
+                        "b_title": second.get("title"),
+                        "b_time": event_time_range_text(second),
+                        "b_key": event_key(second),
+                        "message": (
+                            f"🚨 일정 충돌: {first.get('date')} "
+                            f"'{first.get('title')}'({event_time_range_text(first)})와 "
+                            f"'{second.get('title')}'({event_time_range_text(second)}) 시간이 겹쳐요."
+                        ),
+                    }
+                )
 
-    all_messages = messages + conflicts
-    return {"validation_errors": all_messages, "trace": ["schedule_check:ok"]}
+    conflict_messages = [pair["message"] for pair in conflict_pairs]
+    all_messages = messages + conflict_messages
+    return {"validation_errors": all_messages, "conflict_pairs": conflict_pairs, "trace": ["schedule_check:ok"]}
 
 
 def route_request_node(state: ScheduleState) -> Dict[str, Any]:
@@ -538,12 +613,17 @@ def plan_generation_node(state: ScheduleState) -> Dict[str, Any]:
         grouped.setdefault(event.get("date") or "날짜 미정", []).append(event)
 
     checklist = [f"[ ] {event.get('title', '제목 미정')}" for event in sorted_events]
+    conflict_pairs = state.get("conflict_pairs", [])
+    conflict_event_keys = sorted({key for pair in conflict_pairs for key in [pair.get("a_key"), pair.get("b_key")] if key})
     plan_result = {
         "events": sorted_events,
         "grouped": grouped,
         "checklist": checklist,
         "validation_errors": state.get("validation_errors", []),
+        "conflict_pairs": conflict_pairs,
+        "conflict_event_keys": conflict_event_keys,
         "event_count": len(sorted_events),
+        "conflict_count": len(conflict_pairs),
     }
     return {"plan_result": plan_result, "trace": ["plan_generation"]}
 
@@ -570,7 +650,11 @@ def report_generation_node_factory(client: Optional[OpenAI], model: str):
                 pass
 
         lines = ["## 📅 일정 정리 결과", ""]
-        lines.append(f"총 {plan.get('event_count', 0)}개의 일정을 정리했어요.")
+        conflict_count = plan.get("conflict_count", 0)
+        if conflict_count:
+            lines.append(f"총 {plan.get('event_count', 0)}개의 일정을 메모했고, 겹치는 일정 {conflict_count}건을 찾았어요.")
+        else:
+            lines.append(f"총 {plan.get('event_count', 0)}개의 일정을 메모했어요. 겹치는 일정은 없어요.")
         lines.append("")
         grouped = plan.get("grouped", {})
         for date_value, events in grouped.items():
@@ -704,7 +788,7 @@ WEATHER_CODE_META = {
 
 
 def reset_session():
-    for key in ["messages", "schedule_json", "last_plan", "last_trace", "feedback_history", "pending_example"]:
+    for key in ["messages", "schedule_json", "last_plan", "last_trace", "feedback_history", "pending_example", "latest_result"]:
         st.session_state.pop(key, None)
 
 
@@ -716,7 +800,7 @@ def ensure_state():
                 "role": "assistant",
                 "content": (
                     f"안녕하세요! 오늘은 **{today['today']} ({today['weekday']})**이에요.\n\n"
-                    "자연어로 일정을 말해주면 날짜를 계산해서 시간순으로 정리하고, 겹치는 일정도 확인해드릴게요. "
+                    "자연어로 일정을 말해주면 날짜를 계산해서 시간순으로 메모하고, 이후 새 일정을 추가하면 기존 일정과 겹치는지도 확인해드릴게요. "
                     "상단에는 실시간 전자시계와 현재 지역 날씨도 표시돼요."
                 ),
             }
@@ -1454,20 +1538,89 @@ def render_realtime_widgets():
     st.divider()
 
 
+
+def ui_event_key(event: Dict[str, Any]) -> str:
+    return "|".join(
+        str(event.get(key) or "")
+        for key in ["date", "start_time", "end_time", "title"]
+    )
+
+
+def render_conflict_panel(plan: Dict[str, Any]):
+    conflict_pairs = plan.get("conflict_pairs", [])
+    if not conflict_pairs:
+        st.success("✅ 현재 메모된 일정끼리 겹치는 시간은 없어요.")
+        return
+
+    lines = []
+    for pair in conflict_pairs:
+        message = pair.get("message") or (
+            f"{pair.get('date')} {pair.get('a_title')}({pair.get('a_time')}) ↔ "
+            f"{pair.get('b_title')}({pair.get('b_time')})"
+        )
+        lines.append(f"<div class='conflict-line'>{safe_text(message)}</div>")
+    st.markdown(
+        f"""
+        <div class="conflict-panel">
+            <div class="conflict-title">🚨 일정 충돌 발견</div>
+            {''.join(lines)}
+            <div class="conflict-line">겹치는 일정 카드는 빨간색 테두리로 표시했어요.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_saved_schedule_sidebar():
+    st.header("📝 메모된 일정")
+    schedule = st.session_state.get("schedule_json") or {}
+    events = schedule.get("events") or []
+    if not events:
+        st.caption("아직 메모된 일정이 없어요.")
+        return
+
+    sorted_events = sorted(
+        events,
+        key=lambda e: (e.get("date") or "9999-99-99", e.get("start_time") or "99:99"),
+    )
+    for event in sorted_events[:8]:
+        time_text = event.get("start_time") or "시간 미정"
+        if event.get("end_time"):
+            time_text += f"~{event.get('end_time')}"
+        st.markdown(
+            f"""
+            <div class="memo-list">
+                <div class="memo-item">🗓️ {safe_text(event.get('date') or '날짜 미정')} · ⏰ {safe_text(time_text)}</div>
+                <div class="memo-item"><b>{safe_text(event.get('title') or '제목 미정')}</b></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    if len(sorted_events) > 8:
+        st.caption(f"외 {len(sorted_events) - 8}개 일정은 결과 카드에서 확인하세요.")
+
+    if st.button("메모된 일정만 비우기", use_container_width=True):
+        for key in ["schedule_json", "last_plan", "last_trace", "latest_result", "feedback_history"]:
+            st.session_state.pop(key, None)
+        st.rerun()
+
+
 def render_stat_cards(plan: Dict[str, Any], errors: List[str]):
     events = plan.get("events", [])
+    conflict_count = plan.get("conflict_count", len(plan.get("conflict_pairs", [])))
     first_event = events[0] if events else {}
     first_label = "없음"
     if first_event:
         first_label = f"{first_event.get('date') or '날짜 미정'} {first_event.get('start_time') or '시간 미정'}"
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     cards = [
-        ("총 일정", f"{len(events)}개"),
+        ("메모된 일정", f"{len(events)}개"),
+        ("충돌", f"{conflict_count}건"),
         ("확인 필요", f"{len(errors)}개"),
         ("가장 빠른 일정", first_label),
     ]
-    for col, (label, value) in zip([c1, c2, c3], cards):
+    for col, (label, value) in zip([c1, c2, c3, c4], cards):
         with col:
             st.markdown(
                 f"""
@@ -1480,12 +1633,13 @@ def render_stat_cards(plan: Dict[str, Any], errors: List[str]):
             )
 
 
-def render_event_cards(events: List[Dict[str, Any]]):
+def render_event_cards(events: List[Dict[str, Any]], conflict_event_keys: Optional[List[str]] = None):
     if not events:
-        st.info("아직 정리된 일정이 없어요. 채팅창에 일정을 입력해 주세요.")
+        st.info("아직 메모된 일정이 없어요. 채팅창에 일정을 입력해 주세요.")
         return
 
-    st.subheader("📌 일정 카드")
+    conflict_key_set = set(conflict_event_keys or [])
+    st.subheader("📌 메모된 일정 카드")
     cols = st.columns(3)
     for idx, event in enumerate(events):
         priority = PRIORITY_META.get(event.get("priority"), PRIORITY_META["medium"])
@@ -1495,14 +1649,18 @@ def render_event_cards(events: List[Dict[str, Any]]):
             time_text += f" ~ {event['end_time']}"
         location = event.get("location") or "장소 미정"
         notes = event.get("notes") or "메모 없음"
+        is_conflict = ui_event_key(event) in conflict_key_set
+        card_class = "glass-card conflict-card" if is_conflict else "glass-card"
+        conflict_badge = '<span class="badge priority-high">🚨 충돌</span>' if is_conflict else ""
 
         with cols[idx % 3]:
             st.markdown(
                 f"""
-                <div class="glass-card">
+                <div class="{card_class}">
                     <div>
                         <span class="badge {priority['class']}">{priority['emoji']} {priority['label']}</span>
                         <span class="badge priority-medium">{safe_text(category)}</span>
+                        {conflict_badge}
                     </div>
                     <div class="event-title">{safe_text(event.get('title', '제목 미정'))}</div>
                     <div class="event-line">🗓️ {safe_text(event.get('date') or '날짜 미정')}</div>
@@ -1593,12 +1751,17 @@ def main():
             - 오늘/내일/모레 날짜 자동 계산
             - 요일 기반 날짜 계산
             - 자연어 일정 파싱
+            - 일정 메모/누적 저장
+            - 이후 일정 추가 시 기존 일정과 충돌 확인
             - 일정 추가/수정 요청 반영
             - 시간순 정렬
-            - 일정 충돌 확인
             - 체크리스트 생성
             """
         )
+        st.divider()
+        render_saved_schedule_sidebar()
+
+        st.divider()
         if st.button("🗑️ 대화 초기화", use_container_width=True):
             reset_session()
             st.rerun()
@@ -1621,7 +1784,7 @@ def main():
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    prompt = st.chat_input("예: 내일 오후 2시 팀플 회의, 5시 알바 있어. 일정 정리해줘.")
+    prompt = st.chat_input("예: 내일 오후 2시 팀플 회의 추가해줘. 겹치면 알려줘.")
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
