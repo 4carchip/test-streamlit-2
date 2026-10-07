@@ -30,14 +30,28 @@ streamlit run app.py
 
 API 설정 없이 실행하면 **데모 모드**로 동작합니다 (AI를 호출하지 않고 자료 문장으로 화면 흐름만 보여 줌).
 
-## 멀티AI API 설정
+## API 설정과 모델 선택
 
-1. `.streamlit/secrets.toml.example`을 복사해 `.streamlit/secrets.toml`을 만듭니다.
-2. 학교 멀티AI 플랫폼(https://ai.hknu.ac.kr)에서 확인한 **주소(base_url), API 키, 모델 ID**를 채웁니다.
-3. Streamlit Cloud에 배포할 때는 앱 **Settings → Secrets**에 같은 내용을 붙여 넣습니다.
-4. 앱의 '멀티AI API 연결 안내' 페이지에서 **연결 테스트**를 눌러 확인합니다.
+왼쪽 사이드바 **🔐 API 설정**에서 바로 입력합니다. (예전 일정 비서 앱과 같은 방식)
 
-> 예전처럼 `OPENAI_API_KEY`(와 `OPENAI_MODEL`)만 Secrets에 있으면 OpenAI 공식 API로 동작합니다. 멀티AI 설정을 추가하면 그쪽이 우선입니다.
+- **학교 멀티AI:** 플랫폼 주소(base_url) + API 키 하나로 GPT·Claude 모두 호출 (OpenAI 호환 방식 가정)
+- **개별 API 키:** GPT는 OpenAI 키, Claude는 Anthropic 키로 각 회사 API를 직접 호출
+
+입력한 키는 브라우저 세션에만 보관됩니다. 매번 입력하기 번거로우면 `.streamlit/secrets.toml`(로컬)이나
+Streamlit Cloud **Settings → Secrets**에 넣어 두면, 입력칸이 비어 있을 때 그 값을 씁니다. (`secrets.toml.example` 참고)
+
+**모델 선택창**
+
+| GPT | Claude |
+|---|---|
+| GPT-6.1 Sol (`gpt-6.1-sol`) | Claude Opus 5.5 (`claude-opus-5-5`) |
+| GPT-6 Sol (`gpt-6-sol`) | Claude Sonnet 5.5 (`claude-sonnet-5-5`) |
+| GPT-6 Luna (`gpt-6-luna`) | Claude Opus 5 (`claude-opus-5`) |
+| GPT-5.6 Sol (`gpt-5.6-sol`) | Claude Sonnet 5 (`claude-sonnet-5`) |
+
+괄호 안은 각 회사 공식 API의 모델 ID입니다. 학교 플랫폼의 ID가 다르면 사이드바 **모델 ID 직접 지정(고급)**이나
+secrets의 `[model_ids]`로 바꿀 수 있습니다. 목록 자체는 `core/config.py`의 `CATALOG`에서 수정합니다.
+
 > `secrets.toml`은 `.gitignore`에 들어 있습니다. API 키를 절대 커밋하지 마세요.
 > 플랫폼이 OpenAI 호환 형식이 아니라면 `core/llm.py`의 `_call()`만 고치면 됩니다.
 

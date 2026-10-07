@@ -3,54 +3,49 @@
 import streamlit as st
 
 from core import llm
-from core.config import is_demo_mode, load_models, multiai_settings
+from core.config import CATALOG, MODE_LABEL, VENDOR_NAME, current_mode, resolve
 
 PLATFORM_URL = "https://ai.hknu.ac.kr"
 
 SECRETS_EXAMPLE = '''# .streamlit/secrets.toml  ← 이 파일은 절대 GitHub에 올리지 마세요 (.gitignore에 포함됨)
+# 사이드바에 키를 직접 입력해도 되지만, 배포한 앱에서 매번 입력하기 번거로우면 여기에 넣어 둡니다.
 
+# ① 학교 멀티AI (주소 + 키 하나로 GPT·Claude 모두 사용)
 [multiai]
 base_url = "https://여기에_플랫폼_API_주소/v1"   # 예시 코드에 나오는 주소
 api_key  = "여기에_발급받은_API_키"
 credit_limit = 0          # 사이드바 예산 막대 (선택, 0이면 숨김)
-cost_unit = "크레딧"       # 비용 단위 표시 (선택)
+cost_unit = "USD"         # 비용 단위 표시 (선택)
 
-# 사이드바 '설명 모델' 목록. id는 플랫폼에 표시된 모델 ID를 그대로 적습니다.
-[[models]]
-label = "Claude Opus"
-id = "플랫폼에_표시된_Claude_Opus_모델ID"
-input_price = 0           # 100만 토큰당 비용 (선택, 알면 사용량에 비용 추정 표시)
-output_price = 0
+# ② 회사별 키로 직접 호출할 때 (선택)
+# OPENAI_API_KEY = "sk-..."
+# ANTHROPIC_API_KEY = "sk-ant-..."
 
-[[models]]
-label = "GPT-6 Astra"
-id = "플랫폼에_표시된_GPT-6_Astra_모델ID"
-
-# 모델마다 주소나 키가 다르면 해당 [[models]] 아래에 base_url / api_key를 따로 적으면 됩니다.
+# ③ 플랫폼 모델 ID가 공식 ID와 다를 때만 (선택)
+# [model_ids]
+# "GPT-6.1 Sol" = "플랫폼에_표시된_ID"
+# "Claude Opus 5.5" = "플랫폼에_표시된_ID"
 '''
 
 st.title("🔑 멀티AI API 연결 안내")
 st.markdown(
-    "ClassMate는 학교 **멀티AI 플랫폼**의 크레딧으로 AI를 호출합니다. "
-    "연결에 필요한 값은 **주소(base_url) · API 키 · 모델 ID** 세 가지이고, "
-    "코드에 적지 않고 `secrets`에만 넣습니다."
+    "ClassMate는 **왼쪽 사이드바**에서 API 키를 넣고 모델을 고르면 바로 동작합니다. "
+    "연결 방식은 두 가지입니다.\n"
+    "- **학교 멀티AI:** 플랫폼 주소(base_url)와 키 하나로 GPT·Claude를 모두 호출\n"
+    "- **개별 API 키:** GPT는 OpenAI 키, Claude는 Anthropic 키로 각 회사 API를 직접 호출"
 )
 
 # ---------------- 현재 상태 ----------------
 st.subheader("현재 연결 상태")
-s = multiai_settings()
-models = load_models()
-if is_demo_mode():
-    st.warning("API 설정이 없어 **데모 모드**로 동작 중입니다. 아래 단계를 따라 설정하세요.")
-key = str(s.get("api_key", ""))
-st.table({
-    "항목": ["API 주소 (base_url)", "API 키", "등록된 모델"],
-    "상태": [
-        s.get("base_url") or "❌ 미설정",
-        (key[:4] + "…" + key[-4:]) if len(key) > 10 else ("✅ 설정됨" if key else "❌ 미설정"),
-        ", ".join(f"{m.label} ({m.id})" for m in models),
-    ],
-})
+st.markdown(f"연결 방식: **{MODE_LABEL[current_mode()]}**")
+rows = {"모델": [], "회사": [], "모델 ID": [], "상태": []}
+for label, vendor, *_ in CATALOG:
+    m = resolve(label)
+    rows["모델"].append(label)
+    rows["회사"].append(VENDOR_NAME[vendor])
+    rows["모델 ID"].append(m.id)
+    rows["상태"].append("🟢 키 있음" if not m.is_demo else "⚪ 키 없음 (데모 응답)")
+st.table(rows)
 
 # ---------------- 단계별 안내 ----------------
 st.subheader("1. 플랫폼에서 API 키 발급받기")
@@ -74,25 +69,32 @@ with st.expander("OpenAI 호환 방식이 아니라면?"):
         "나머지 화면·사용량 기록·교차검증 코드는 그대로 동작합니다."
     )
 
-st.subheader("3. secrets 설정하기")
-tab_local, tab_cloud = st.tabs(["내 컴퓨터에서 실행할 때", "Streamlit Cloud에 배포할 때"])
+st.subheader("3. 키 넣기")
+st.markdown(
+    "**가장 간단한 방법:** 왼쪽 사이드바 **🔐 API 설정**에서 연결 방식을 고르고 주소·키를 입력합니다. "
+    "입력한 키는 이 브라우저 세션에만 있고, 새로고침하거나 창을 닫으면 사라집니다.\n\n"
+    "**매번 입력하기 싫다면** secrets에 저장해 두세요. 사이드바 입력칸이 비어 있으면 secrets 값을 씁니다."
+)
+tab_local, tab_cloud = st.tabs(["secrets — 내 컴퓨터에서 실행할 때", "secrets — Streamlit Cloud에 배포할 때"])
 with tab_local:
-    st.markdown("프로젝트 폴더에 `.streamlit/secrets.toml` 파일을 만들고 아래 내용을 채웁니다. (`secrets.toml.example`을 복사해서 시작하세요)")
+    st.markdown("프로젝트 폴더에 `.streamlit/secrets.toml` 파일을 만들고 필요한 부분만 채웁니다. (`secrets.toml.example`을 복사해서 시작하세요)")
     st.code(SECRETS_EXAMPLE, language="toml")
 with tab_cloud:
     st.markdown(
         "1. [share.streamlit.io](https://share.streamlit.io)에서 이 앱의 **⋮ → Settings → Secrets**를 엽니다.\n"
         "2. 왼쪽 탭의 내용을 그대로 붙여 넣고 **Save**를 누릅니다.\n"
-        "3. 앱이 자동으로 다시 시작되면 사이드바의 '데모 모드' 경고가 사라집니다."
+        "3. 앱이 자동으로 다시 시작되면 사이드바 모델 아래에 '🟢 연결 준비됨'이 표시됩니다.\n\n"
+        "⚠️ 배포된 앱 주소를 다른 사람과 공유하면, secrets에 넣은 키의 크레딧을 그 사람도 쓰게 됩니다. "
+        "공유할 앱이라면 secrets 대신 각자 사이드바에 키를 입력하게 하세요."
     )
 
 st.subheader("4. 연결 테스트")
-if is_demo_mode():
-    st.caption("지금은 데모 모델로 테스트됩니다. 설정 후에는 실제 모델로 짧은 요청을 보냅니다.")
-labels = [m.label for m in models]
+labels = [label for label, *_ in CATALOG]
 pick = st.selectbox("테스트할 모델", labels, key="ping_model")
+if resolve(pick).is_demo:
+    st.caption("이 모델은 키가 없어 데모 응답으로 테스트됩니다. 사이드바에 키를 넣은 뒤 다시 눌러 보세요.")
 if st.button("연결 테스트 실행", type="primary"):
-    model = next(m for m in models if m.label == pick)
+    model = resolve(pick)
     with st.spinner("짧은 요청을 보내는 중..."):
         ok, msg, sec = llm.ping(model)
     if ok:
