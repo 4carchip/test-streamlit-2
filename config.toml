@@ -1,0 +1,5 @@
+[server]
+maxUploadSize = 200   # MB, 교재 PDF 업로드 한도
+
+[theme]
+primaryColor = "#2E75B6"

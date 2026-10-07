@@ -1,0 +1,24 @@
+item_id,exam,subject_no,subject,main_topic,sub_topic,source,verified
+ADSP-1,ADsP,1,데이터 이해,,,dataq.or.kr 시험안내,TRUE
+ADSP-1-1,ADsP,1,데이터 이해,데이터의 이해,,dataq.or.kr 시험안내,TRUE
+ADSP-1-2,ADsP,1,데이터 이해,데이터의 가치와 미래,,dataq.or.kr 시험안내,TRUE
+ADSP-1-3,ADsP,1,데이터 이해,가치 창조를 위한 데이터 사이언스와 전략 인사이트,,dataq.or.kr 시험안내,TRUE
+ADSP-2,ADsP,2,데이터분석 기획,,,dataq.or.kr 시험안내,TRUE
+ADSP-2-1,ADsP,2,데이터분석 기획,데이터분석 기획의 이해,,dataq.or.kr 시험안내,TRUE
+ADSP-2-2,ADsP,2,데이터분석 기획,분석 마스터 플랜,,dataq.or.kr 시험안내,TRUE
+ADSP-3,ADsP,3,데이터분석,,,dataq.or.kr 시험안내,TRUE
+ADSP-3-1,ADsP,3,데이터분석,R기초와 데이터 마트,,dataq.or.kr 시험안내,TRUE
+ADSP-3-2,ADsP,3,데이터분석,통계분석,,dataq.or.kr 시험안내,TRUE
+ADSP-3-3,ADsP,3,데이터분석,정형 데이터 마이닝,,dataq.or.kr 시험안내,TRUE
+GIGI-1,정보처리기사(필기),1,소프트웨어 설계,,,과목명 확인됨 / 주요항목 미입력,TRUE
+GIGI-2,정보처리기사(필기),2,소프트웨어 개발,,,과목명 확인됨 / 주요항목 미입력,TRUE
+GIGI-3,정보처리기사(필기),3,데이터베이스 구축,,,과목명 확인됨 / 주요항목 미입력,TRUE
+GIGI-4,정보처리기사(필기),4,프로그래밍 언어 활용,,,과목명 확인됨 / 주요항목 미입력,TRUE
+GIGI-5,정보처리기사(필기),5,정보시스템 구축관리,,,과목명 확인됨 / 주요항목 미입력,TRUE
+GIGI-3-A,정보처리기사(필기),3,데이터베이스 구축,논리 데이터베이스 설계,,TODO: 큐넷 출제기준 PDF로 확인,FALSE
+GIGI-3-B,정보처리기사(필기),3,데이터베이스 구축,물리 데이터베이스 설계,,TODO: 큐넷 출제기준 PDF로 확인,FALSE
+GIGI-3-C,정보처리기사(필기),3,데이터베이스 구축,SQL 응용,,TODO: 큐넷 출제기준 PDF로 확인,FALSE
+GIGI-3-D,정보처리기사(필기),3,데이터베이스 구축,SQL 활용,,TODO: 큐넷 출제기준 PDF로 확인,FALSE
+GIGI-3-E,정보처리기사(필기),3,데이터베이스 구축,데이터베이스 기초 활용,,TODO: 큐넷 출제기준 PDF로 확인,FALSE
+GIGI-5-A,정보처리기사(필기),5,정보시스템 구축관리,소프트웨어 개발 방법론 활용,,TODO: 큐넷 출제기준 PDF로 확인,FALSE
+GIGI-5-B,정보처리기사(필기),5,정보시스템 구축관리,IT 프로젝트 정보시스템 구축관리,,TODO: 큐넷 출제기준 PDF로 확인,FALSE
