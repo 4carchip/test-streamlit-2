@@ -40,7 +40,8 @@ def estimate_tokens(text: str) -> int:
 
 
 def record(model: ModelCfg, tin: int, tout: int, estimated: bool = False) -> None:
-    cost = tin / 1_000_000 * model.input_price + tout / 1_000_000 * model.output_price
+    # 데모 응답은 실제 호출이 아니므로 비용 0
+    cost = 0.0 if model.is_demo else tin / 1_000_000 * model.input_price + tout / 1_000_000 * model.output_price
     _add(st.session_state.setdefault("usage", {}), model.label, tin, tout, cost, estimated)
 
     # 누적 기록은 실패해도 앱 동작에는 영향이 없게 한다.

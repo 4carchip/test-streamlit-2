@@ -29,7 +29,7 @@ cost_unit = "USD"         # 비용 단위 표시 (선택)
 
 st.title("🔑 멀티AI API 연결 안내")
 st.markdown(
-    "ClassMate는 **왼쪽 사이드바**에서 API 키를 넣고 모델을 고르면 바로 동작합니다. "
+    "CertMate는 **왼쪽 사이드바**에서 API 키를 넣고 모델을 고르면 바로 동작합니다. "
     "연결 방식은 두 가지입니다.\n"
     "- **학교 멀티AI:** 플랫폼 주소(base_url)와 키 하나로 GPT·Claude를 모두 호출\n"
     "- **개별 API 키:** GPT는 OpenAI 키, Claude는 Anthropic 키로 각 회사 API를 직접 호출"

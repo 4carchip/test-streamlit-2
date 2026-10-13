@@ -1,3 +1,4 @@
 streamlit>=1.40
+pandas
 openai>=1.40
 pypdf>=4.0

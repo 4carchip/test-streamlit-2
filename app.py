@@ -1,17 +1,18 @@
-"""ClassMate — 근거 기반 학습 보조 AI (Streamlit 진입점).
+"""CertMate — 컴퓨터공학 자격증 학습 보조 AI (Streamlit 진입점).
 
 실행: streamlit run app.py
 """
 
 import streamlit as st
 
-st.set_page_config(page_title="ClassMate", page_icon="📚", layout="wide")
+st.set_page_config(page_title="CertMate", page_icon="📚", layout="wide")
 
 from core import sidebar  # noqa: E402  (set_page_config가 가장 먼저 와야 함)
 
 pages = [
     st.Page("app_pages/study.py", title="공부하기", icon="📖", default=True),
     st.Page("app_pages/quiz.py", title="이해도 확인", icon="📝"),
+    st.Page("app_pages/wrongnote.py", title="오답노트", icon="📒"),
     st.Page("app_pages/api_guide.py", title="멀티AI API 연결 안내", icon="🔑"),
 ]
 pg = st.navigation(pages)
