@@ -1,0 +1,10 @@
+link_id,concept_id,from_item_id,to_item_id,relation,confidence,rationale,verified,checked_by,checked_at
+L001,C002,ADSP-1-1,GIGI-3-E,동일개념,0.9,"두 시험 모두 데이터베이스의 정의·특징(통합·저장·공용·운영 데이터)을 다룸",FALSE,,
+L002,C003,ADSP-1-1,GIGI-3-E,동일개념,0.9,"DBMS의 역할과 기능(정의·조작·제어)이 양쪽 출제기준에 포함",FALSE,,
+L003,C004,ADSP-1-1,GIGI-3-A,부분겹침,0.6,"ADsP는 DW의 개념·활용 중심, 정처기는 논리 설계 관점에서 다룸",FALSE,,
+L004,C005,ADSP-3-1,GIGI-3-A,부분겹침,0.5,"데이터마트는 ADsP에서 분석용 마트 구성, 정처기에서는 설계 산출물 관점",FALSE,,
+L005,C006,ADSP-1-1,GIGI-3-D,부분겹침,0.6,"OLAP 연산(롤업·드릴다운)은 SQL 활용의 집계·분석 함수와 연결",FALSE,,
+L006,C007,ADSP-1-2,GIGI-5-B,용어공유,0.4,"빅데이터 관련 용어가 정처기 신기술 문항에서 단답형으로 출제되는 경향",FALSE,,
+L007,C008,ADSP-1-1,GIGI-3-E,동일개념,0.7,"정형·반정형·비정형 구분은 양쪽 모두 기초 개념으로 출제",FALSE,,
+L008,C010,ADSP-2-1,GIGI-5-B,부분겹침,0.5,"데이터 품질·표준·보안 관리 관점이 정보시스템 구축관리와 겹침",FALSE,,
+L009,C012,ADSP-3-3,GIGI-5-B,용어공유,0.3,"데이터마이닝 기법 명칭 수준에서만 겹칠 가능성 — 검증 필요",FALSE,,

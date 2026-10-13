@@ -1,0 +1,14 @@
+# 비밀 값 — 절대 커밋하지 않기
+.streamlit/secrets.toml
+.env
+
+# 실행 중 생기는 파일
+.cache/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 사용자 자료 (교재 PDF 등)
+uploads/
+*.pdf
