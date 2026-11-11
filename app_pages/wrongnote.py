@@ -3,11 +3,14 @@
 import pandas as pd
 import streamlit as st
 
-from core import llm, mapping, wrongnote as wn
+from core import llm, mapping, persist, wrongnote as wn
 from core.sidebar import selected_models
 
 st.title("📒 오답노트")
 st.caption("틀린 문제는 자동으로 모입니다. 틀린 이유를 확정하고, 정해진 날짜에 다시 풀고, 같은 유형 문제로 약점을 메웁니다.")
+
+if _msg := st.session_state.pop("_wn_storage_msg", None):
+    (st.warning if _msg.startswith("⚠") else st.success)(_msg)
 
 notes = wn.notes()
 due_today = wn.due_items()
@@ -137,7 +140,9 @@ with tab_stat:
 
 # ---------------- 백업 ----------------
 with tab_backup:
-    st.caption("오답노트는 이 브라우저 세션에만 있습니다. 공부를 마칠 때 내려받고, 다음에 다시 올리면 이어서 복습할 수 있어요.")
+    st.caption("오답노트는 이 브라우저에 자동으로 저장됩니다(서버에는 저장하지 않아요). 다른 기기나 시크릿 창에서는 보이지 않으니, "
+               "기기를 옮길 때는 JSON으로 내려받았다가 다시 올려 주세요. "
+               "같은 브라우저에서 여러 탭으로 동시에 공부하면 마지막으로 저장한 탭의 기록만 남으니, 탭 하나만 쓰세요.")
     st.download_button("오답노트 내려받기 (JSON)", wn.export_json(), file_name="certmate_오답노트.json",
                        mime="application/json", disabled=not notes)
     up = st.file_uploader("오답노트 불러오기", type=["json"], key="wn-import")
@@ -148,3 +153,6 @@ with tab_backup:
             st.rerun()
         except Exception as e:
             st.error(f"파일을 읽지 못했어요: {e}")
+    if st.button("이 브라우저에서 오답노트 지우기 (공용 PC라면 사용 후 눌러 주세요)", key="wn-clear"):
+        persist.clear()
+        st.rerun()
