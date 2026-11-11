@@ -1,17 +1,15 @@
 """오답노트를 이 브라우저의 localStorage에 자동 저장·복원한다.
 
-서버에는 아무것도 저장하지 않는다. 브라우저 쪽 입출력은 core/storage_component(index.html)가 맡고,
+서버에는 아무것도 저장하지 않는다. 브라우저 쪽 입출력은 core/browser_storage.py(숨은 컴포넌트 하나)가 맡고,
 이 모듈은 '무엇을 저장하고, 받은 값을 어떻게 합칠지'만 정한다.
-저장 대상은 wrongnote.export_json()에 담기는 것(오답 + 문제 은행)뿐이다. PDF·대화·API 키는 저장하지 않는다.
+저장 대상은 wrongnote.export_json()에 담기는 것(오답 + 문제 은행)뿐이다. PDF·대화는 저장하지 않는다. API 설정은 사용자가 고를 때만 core/apikeys.py가 따로 다룬다.
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from core import wrongnote as wn
 
@@ -19,7 +17,6 @@ STORAGE_KEY = "certmate.wrongnote.v1"
 LOADED = "_wn_storage_loaded"
 MSG = "_wn_storage_msg"
 
-_COMPONENT_DIR = Path(__file__).resolve().parent / "storage_component"
 
 
 def payload() -> str:
@@ -95,19 +92,3 @@ def clear() -> None:
     st.session_state["question_bank"] = []
     st.session_state["bank_solved"] = set()
     st.session_state[LOADED] = True
-
-
-def _component():
-    return components.declare_component("wn_storage", path=str(_COMPONENT_DIR))
-
-
-def sync() -> None:
-    """페이지마다 한 번 호출. 브라우저와 저장·복원을 맞춘다. 실패해도 앱은 계속 동작한다."""
-    try:
-        value = _component()(storage_key=STORAGE_KEY, save=save_arg(), key="wn_storage", default=None)
-    except Exception:
-        return
-    msg = apply_loaded(value)
-    if msg:
-        st.session_state[MSG] = msg
-        st.rerun()   # sync()는 페이지를 그린 뒤 실행되므로, 불러온 내용·안내를 바로 보이게 다시 그린다

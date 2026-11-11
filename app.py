@@ -7,7 +7,7 @@ import streamlit as st
 
 st.set_page_config(page_title="CertMate", page_icon="📚", layout="wide")
 
-from core import persist, sidebar  # noqa: E402  (set_page_config가 가장 먼저 와야 함)
+from core import browser_storage, sidebar  # noqa: E402  (set_page_config가 가장 먼저 와야 함)
 
 pages = [
     st.Page("app_pages/study.py", title="공부하기", icon="📖", default=True),
@@ -19,5 +19,5 @@ pg = st.navigation(pages)
 sidebar.render_controls()   # 모델 선택·교차검증 (모든 페이지 공통)
 pg.run()
 with st.sidebar:
-    persist.sync()          # 오답노트를 이 브라우저(localStorage)에 자동 저장·복원
+    browser_storage.sync()  # 오답노트(+ 선택 시 API 설정)를 이 브라우저(localStorage)에 저장·복원
 sidebar.render_usage()      # 페이지에서 호출한 사용량까지 반영해서 표시
