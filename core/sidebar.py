@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from core import usage
+from core import apikeys, usage
 from core.config import (
     LABELS, MODE_DIRECT, MODE_LABEL, MODE_MULTIAI, SS_MULTIAI_KEY, SS_MULTIAI_URL, SS_VENDOR_KEY,
     VENDOR_NAME, ModelCfg, cost_unit, credit_limit, default_id, default_mode, resolve,
@@ -63,6 +63,7 @@ def _default_verifier(main_label: str) -> str:
 
 def render_controls() -> None:
     """페이지 실행 전에 그린다: API 설정·모델 선택·교차검증."""
+    apikeys.apply_pending()   # 위젯을 만들기 전에 복원값 반영
     with st.sidebar:
         # ---------------- API 설정 ----------------
         st.markdown("### 🔐 API 설정")
@@ -85,7 +86,15 @@ def render_controls() -> None:
                 _kept_input(f"{VENDOR_NAME[vendor]} API 키 ({who})", SS_VENDOR_KEY[vendor], type="password",
                             placeholder="Secrets 값 사용 중" if secret_vendor_key(vendor) else "",
                             help=_secret_hint(secret_vendor_key(vendor)))
-        st.caption("입력한 키는 이 브라우저 세션에만 보관되며 어디에도 저장되지 않습니다.")
+        st.session_state.setdefault(apikeys.REMEMBER, False)
+        st.checkbox(
+            "이 브라우저에 API 설정 기억하기", key=apikeys.REMEMBER,
+            help="체크하면 연결 방식·API 주소·키를 이 브라우저(localStorage)에 저장해 새로고침해도 유지합니다. 서버에는 저장하지 않습니다.",
+        )
+        if st.session_state[apikeys.REMEMBER]:
+            st.caption("⚠️ 키가 이 브라우저에 암호화 없이 저장됩니다. 공용·학교 PC에서는 체크하지 마세요. 체크를 풀면 저장된 값이 지워집니다.")
+        else:
+            st.caption("입력한 키는 이 브라우저 세션에만 보관되며, 새로고침하면 사라집니다. 서버에는 저장하지 않습니다.")
 
         # ---------------- 모델 선택 ----------------
         st.markdown("### 🤖 AI 모델")
