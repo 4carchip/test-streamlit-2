@@ -94,29 +94,36 @@ if question:
     main_model, verifier = selected_models()
     with st.chat_message("assistant"):
         idx = state.index()
-        hits = [(s, c) for s, c in (idx.search(question, TOP_K) if idx else []) if s >= MIN_SCORE]
+        query = answer.search_query(question, messages)
+        hits = [(s, c) for s, c in (idx.search(query, TOP_K) if idx else []) if s >= MIN_SCORE]
         meta: dict = {"sources": [c.as_dict() for _, c in hits]}
         mode = answer.current_mode()
         meta["mode"] = mode
         history = answer.history_for_model(messages)
         general: str | None = None
         grounded: str | None = None
-        context = format_context([c for _, c in hits]) if hits else ""
+        grounded_raw: str | None = None   # 잘림 안내를 붙이기 전 원문 (교차검증·출제 안내용)
+        context =format_context([c for _, c in hits]) if hits else ""
 
         try:
             if mode == answer.MODE_HYBRID:
                 with st.spinner(f"{main_model.label}이(가) 개념을 설명하는 중..."):
-                    general = llm.chat(main_model, answer.general_messages(question, history),
-                                       purpose="general")
+                    general, cut = llm.chat_with_status(
+                        main_model, answer.general_messages(question, history),
+                        purpose="general", max_tokens=answer.GENERAL_MAX_TOKENS)
+                    general = answer.finish(general, cut)
             if hits:
                 with st.spinner(f"{main_model.label}이(가) 자료를 읽고 설명하는 중..."):
-                    grounded = llm.chat(
+                    grounded, cut = llm.chat_with_status(
                         main_model, answer.grounded_messages(mode, question, context, history),
                         purpose="answer" if mode == answer.MODE_GROUNDED else "notes",
+                        max_tokens=answer.NOTES_MAX_TOKENS,
                         demo_hint={"chunks": meta["sources"]})
-                if verifier:
+                grounded_raw = grounded
+                if verifier:   # 잘림 안내 문구가 '주장'으로 판정되지 않게, 안내를 붙이기 전 원문으로 검증한다
                     with st.spinner(f"{verifier.label}이(가) 근거와 대조하는 중..."):
-                        meta["check"] = crosscheck.safe_verify(verifier, context, grounded)
+                        meta["check"] = crosscheck.safe_verify(verifier, context, grounded_raw)
+                grounded = answer.finish(grounded_raw, cut)
             answer_text = answer.compose(mode, general, grounded)
         except llm.LLMError as e:
             answer_text = f"⚠️ AI 호출에 실패했습니다.\n\n{e}"
@@ -124,7 +131,7 @@ if question:
         # 교차 출제 안내는 AI가 아니라 출제기준 데이터를 검색해서 만든다.
         # (근거 문단 전체가 아니라 질문·자료 답변에 나온 개념만 대상으로 한다.
         #  AI 일반 설명은 넣지 않는다: 자료와 무관한 개념이 섞이지 않게)
-        if (text := answer.mapping_text(mode, question, grounded)) is not None:
+        if (text := answer.mapping_text(mode, query, grounded_raw)) is not None:
             meta["mapping"] = mapping.find(text)
 
         st.markdown(answer_text)
