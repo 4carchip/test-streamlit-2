@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from core import apikeys, usage
+from core import answer, apikeys, usage
 from core.config import (
     LABELS, MODE_DIRECT, MODE_LABEL, MODE_MULTIAI, SS_MULTIAI_KEY, SS_MULTIAI_URL, SS_VENDOR_KEY,
     VENDOR_NAME, ModelCfg, cost_unit, credit_limit, default_id, default_mode, resolve,
@@ -103,6 +103,12 @@ def render_controls() -> None:
         st.caption(_model_status(main))
         if main.is_demo:
             st.warning("API 키가 없어 데모 응답으로 동작합니다. 위에 키를 입력하세요.")
+        st.session_state.setdefault(answer.SS_MODE, answer.MODE_HYBRID)
+        st.radio(
+            "답변 방식", answer.MODES, key=answer.SS_MODE,
+            format_func=lambda m: answer.MODE_LABEL[m], horizontal=True,
+            help="자료 + AI 설명: AI의 일반 설명과 내 자료 내용을 나눠서 보여 줍니다(호출 2번). 자료만: 올린 자료에 있는 내용으로만 답합니다.",
+        )
 
         with st.expander("모델 ID 직접 지정 (고급)"):
             st.caption("학교 플랫폼의 모델 ID가 공식 ID와 다를 때만 바꾸세요. 비우면 기본값으로 돌아갑니다.")

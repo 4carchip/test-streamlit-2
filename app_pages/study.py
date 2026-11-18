@@ -2,23 +2,18 @@
 
 import streamlit as st
 
-from core import crosscheck, llm, mapping, state
+from core import answer, crosscheck, llm, mapping, state
 from core.documents import format_context
 from core.sidebar import selected_models
 
 MIN_SCORE = 1.0   # 검색 점수가 이보다 낮으면 '자료에 없음'으로 처리
 TOP_K = 5
 
-SYSTEM = """너는 대학생의 자격증·전공 공부를 돕는 학습 조교 'CertMate'다.
-규칙:
-1. 반드시 [근거]에 있는 내용으로만 답한다. 근거에 없으면 "업로드한 자료에서 찾을 수 없습니다"라고 말하고 추측하지 않는다.
-2. 문장마다 근거 위치를 [자료명 p.쪽] 형식으로 붙인다.
-3. 다음 순서로 쓴다: **핵심 설명** → **부연 설명**(쉬운 예시, 헷갈리는 개념과 비교) → **시험 포인트**.
-4. 다른 자격증 시험에 나오는지 여부는 말하지 않는다. (앱이 공식 출제기준 데이터로 따로 안내한다)
-5. 한국어로, 대학생이 이해하기 쉽게 쓴다."""
-
 st.title("📖 공부하기")
-st.caption("교재 PDF를 올리고 질문하세요. 모든 답변은 올린 자료에 근거하며, 근거 쪽 번호가 함께 표시됩니다.")
+if answer.current_mode() == answer.MODE_HYBRID:
+    st.caption("교재 PDF를 올리고 질문하세요. 🤖 AI 설명과 📄 내 자료 내용을 나눠 보여 주며, 자료 내용에는 근거 쪽 번호가 붙습니다.")
+else:
+    st.caption("교재 PDF를 올리고 질문하세요. 모든 답변은 올린 자료에 근거하며, 근거 쪽 번호가 함께 표시됩니다.")
 
 # ---------------- 자료 업로드 ----------------
 with st.expander("📂 학습 자료 (PDF)", expanded=not state.docs()):
@@ -47,7 +42,8 @@ with st.expander("📂 학습 자료 (PDF)", expanded=not state.docs()):
 def render_extras(meta: dict) -> None:
     check = meta.get("check")
     if check:
-        st.markdown(f"**{check['overall']} 교차검증** — {check['summary']} _(검증: {check.get('verifier', '')})_")
+        scope = "(📄 내 자료에서 부분) " if meta.get("mode") == answer.MODE_HYBRID else ""
+        st.markdown(f"**{check['overall']} 교차검증** — {scope}{check['summary']} _(검증: {check.get('verifier', '')})_")
         if check.get("claims"):
             with st.expander("주장별 판정 보기"):
                 for c in check["claims"]:
@@ -100,31 +96,40 @@ if question:
         idx = state.index()
         hits = [(s, c) for s, c in (idx.search(question, TOP_K) if idx else []) if s >= MIN_SCORE]
         meta: dict = {"sources": [c.as_dict() for _, c in hits]}
+        mode = answer.current_mode()
+        meta["mode"] = mode
+        history = answer.history_for_model(messages)
+        general: str | None = None
+        grounded: str | None = None
+        context = format_context([c for _, c in hits]) if hits else ""
 
-        if not hits:
-            answer = "업로드한 자료에서 관련 내용을 찾지 못했습니다. 다른 표현으로 물어보거나, 해당 내용이 있는 자료를 올려 주세요."
-        else:
-            context = format_context([c for _, c in hits])
-            history = [{"role": m["role"], "content": m["content"]} for m in messages[-7:-1]]
-            prompt = [{"role": "system", "content": SYSTEM}, *history,
-                      {"role": "user", "content": f"[근거]\n{context}\n\n[질문]\n{question}"}]
-            try:
+        try:
+            if mode == answer.MODE_HYBRID:
+                with st.spinner(f"{main_model.label}이(가) 개념을 설명하는 중..."):
+                    general = llm.chat(main_model, answer.general_messages(question, history),
+                                       purpose="general")
+            if hits:
                 with st.spinner(f"{main_model.label}이(가) 자료를 읽고 설명하는 중..."):
-                    answer = llm.chat(main_model, prompt, purpose="answer",
-                                      demo_hint={"chunks": meta["sources"]})
+                    grounded = llm.chat(
+                        main_model, answer.grounded_messages(mode, question, context, history),
+                        purpose="answer" if mode == answer.MODE_GROUNDED else "notes",
+                        demo_hint={"chunks": meta["sources"]})
                 if verifier:
                     with st.spinner(f"{verifier.label}이(가) 근거와 대조하는 중..."):
-                        meta["check"] = crosscheck.verify(verifier, context, answer)
-            except llm.LLMError as e:
-                answer = f"⚠️ AI 호출에 실패했습니다.\n\n{e}"
+                        meta["check"] = crosscheck.safe_verify(verifier, context, grounded)
+            answer_text = answer.compose(mode, general, grounded)
+        except llm.LLMError as e:
+            answer_text = f"⚠️ AI 호출에 실패했습니다.\n\n{e}"
 
-            # 교차 출제 안내는 AI가 아니라 출제기준 데이터를 검색해서 만든다.
-            # (근거 문단 전체가 아니라 질문·답변에 나온 개념만 대상으로 한다)
-            meta["mapping"] = mapping.find(question + "\n" + answer)
+        # 교차 출제 안내는 AI가 아니라 출제기준 데이터를 검색해서 만든다.
+        # (근거 문단 전체가 아니라 질문·자료 답변에 나온 개념만 대상으로 한다.
+        #  AI 일반 설명은 넣지 않는다: 자료와 무관한 개념이 섞이지 않게)
+        if (text := answer.mapping_text(mode, question, grounded)) is not None:
+            meta["mapping"] = mapping.find(text)
 
-        st.markdown(answer)
+        st.markdown(answer_text)
         render_extras(meta)
-    messages.append({"role": "assistant", "content": answer, "meta": meta})
+    messages.append({"role": "assistant", "content": answer_text, "meta": meta})
 
 if messages:
     if st.button("대화 지우기"):

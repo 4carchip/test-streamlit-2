@@ -21,7 +21,11 @@ def respond(purpose: str, messages: list[dict], hint: dict) -> str:
     if purpose == "ping":
         return "OK (데모 모드)"
 
-    if purpose == "answer":
+    if purpose == "general":
+        q = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+        return f"(데모 응답) 일반 설명: '{q[:60]}'에 대한 설명입니다. API 키를 넣으면 실제 AI가 설명합니다."
+
+    if purpose in ("answer", "notes"):
         chunks = hint.get("chunks", [])
         if not chunks:
             return "업로드한 자료에서 관련 내용을 찾지 못했습니다."
