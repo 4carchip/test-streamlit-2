@@ -59,3 +59,11 @@ def verify(model: ModelCfg, context: str, answer: str) -> dict:
     else:
         overall, summary = "✅", "모든 주장이 자료로 확인되었습니다."
     return {"overall": overall, "summary": summary, "claims": claims, "verifier": model.label}
+
+
+def safe_verify(model: ModelCfg, context: str, answer: str) -> dict:
+    """verify()와 같지만 호출이 실패해도 예외를 올리지 않는다. 교차검증은 부가 기능이라 본문 답변을 지우면 안 된다."""
+    try:
+        return verify(model, context, answer)
+    except llm.LLMError as e:
+        return {"overall": "⚠️", "summary": f"교차검증 호출에 실패했습니다: {e}", "claims": [], "verifier": model.label}

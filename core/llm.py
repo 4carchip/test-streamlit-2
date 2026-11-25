@@ -59,7 +59,7 @@ def _call(model: ModelCfg, messages: list[dict], max_tokens: int, temperature: f
     raise last  # type: ignore[misc]
 
 
-def chat(
+def chat_with_status(
     model: ModelCfg,
     messages: list[dict],
     *,
@@ -67,14 +67,14 @@ def chat(
     max_tokens: int = 1500,
     temperature: float = 0.2,
     demo_hint: dict | None = None,
-) -> str:
-    """모델을 호출하고 사용량을 기록한 뒤 텍스트를 돌려준다."""
+) -> tuple[str, bool]:
+    """모델을 호출하고 사용량을 기록한 뒤 (텍스트, 길이 제한으로 잘렸는지)를 돌려준다."""
     if model.is_demo:
         text = demo.respond(purpose, messages, demo_hint or {})
         prompt_text = "".join(m["content"] for m in messages)
         usage.record(model, usage.estimate_tokens(prompt_text), usage.estimate_tokens(text), estimated=True)
         time.sleep(0.3)
-        return text
+        return text, False
 
     try:
         resp = _call(model, messages, max_tokens, temperature)
@@ -88,7 +88,25 @@ def chat(
     else:
         prompt_text = "".join(m["content"] for m in messages)
         usage.record(model, usage.estimate_tokens(prompt_text), usage.estimate_tokens(text), estimated=True)
-    return text
+    choices = getattr(resp, "choices", None)
+    truncated = bool(choices) and getattr(choices[0], "finish_reason", None) == "length"
+    return text, truncated
+
+
+def chat(
+    model: ModelCfg,
+    messages: list[dict],
+    *,
+    purpose: str = "answer",
+    max_tokens: int = 1500,
+    temperature: float = 0.2,
+    demo_hint: dict | None = None,
+) -> str:
+    """모델을 호출하고 사용량을 기록한 뒤 텍스트를 돌려준다."""
+    return chat_with_status(
+        model, messages, purpose=purpose, max_tokens=max_tokens,
+        temperature=temperature, demo_hint=demo_hint,
+    )[0]
 
 
 def parse_json(text: str) -> dict:
