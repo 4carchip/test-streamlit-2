@@ -48,16 +48,21 @@ else:
             main_model, verifier = selected_models()
             try:
                 with st.spinner(f"{main_model.label}이(가) 문제를 만들고{' ' + verifier.label + '이(가) 정답을 검증하는' if verifier else ''} 중..."):
-                    qs = quizgen.generate(chunks, n, level, main_model, verifier)
+                    res = quizgen.generate_report(chunks, n, level, main_model, verifier)
                 for k in [k for k in st.session_state if str(k).startswith("q") and str(k)[1:].isdigit()]:
                     del st.session_state[k]   # 이전 문제의 선택값 초기화
-                st.session_state["quiz"] = {"doc": doc.name, "questions": qs, "graded": False}
-                if not qs:
-                    st.error("문제를 만들지 못했습니다. 다시 시도해 주세요.")
+                st.session_state["quiz"] = {"doc": doc.name, "questions": res.questions, "graded": False}
+                if res.note and res.questions:
+                    st.warning(res.note)
+                if not res.questions:
+                    st.error(res.note or "문제를 만들지 못했습니다. 다시 시도해 주세요.")
+                if (not res.questions or res.note) and res.raw:
+                    with st.expander("AI 원문 보기 (문제 해결용)"):
+                        st.code(res.raw[:6000])
             except llm.LLMError as e:
                 st.error(f"AI 호출에 실패했습니다. {e}")
             except (ValueError, TypeError) as e:
-                st.error(f"문제 형식을 해석하지 못했습니다: {e}")
+                st.error(f"AI가 보낸 문제 형식을 읽지 못했어요. 다시 시도해 주세요. ({e})")
 
     # ---------------- 풀이·채점 ----------------
     quiz = st.session_state.get("quiz")
