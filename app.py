@@ -9,12 +9,20 @@ st.set_page_config(page_title="CertMate", page_icon="📚", layout="wide")
 
 from core import persist, sidebar  # noqa: E402  (set_page_config가 가장 먼저 와야 함)
 
-pages = [
-    st.Page("app_pages/study.py", title="공부하기", icon="📖", default=True),
-    st.Page("app_pages/quiz.py", title="이해도 확인", icon="📝"),
-    st.Page("app_pages/wrongnote.py", title="오답노트", icon="📒"),
-    st.Page("app_pages/api_guide.py", title="멀티AI API 연결 안내", icon="🔑"),
-]
+pages = {
+    "공부": [
+        st.Page("app_pages/study.py", title="공부하기", icon="📖", default=True),
+        st.Page("app_pages/quiz.py", title="이해도 확인", icon="📝"),
+        st.Page("app_pages/wrongnote.py", title="오답노트", icon="📒"),
+    ],
+    "준비 계획": [
+        st.Page("app_pages/roadmap.py", title="진로 로드맵", icon="🧭"),
+        st.Page("app_pages/guide.py", title="선수 과목 가이드", icon="🗺️"),
+    ],
+    "설정": [
+        st.Page("app_pages/api_guide.py", title="멀티AI API 연결 안내", icon="🔑"),
+    ],
+}
 pg = st.navigation(pages)
 sidebar.render_controls()   # 모델 선택·교차검증 (모든 페이지 공통)
 pg.run()
