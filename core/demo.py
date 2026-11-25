@@ -68,6 +68,9 @@ def respond(purpose: str, messages: list[dict], hint: dict) -> str:
             })
         return json.dumps({"questions": qs}, ensure_ascii=False)
 
+    if purpose == "repair":
+        return '{"questions": []}'
+
     if purpose == "quiz_check":
         keys = hint.get("keys", [])
         return json.dumps({"answers": keys}, ensure_ascii=False)
